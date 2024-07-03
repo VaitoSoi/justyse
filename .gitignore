@@ -122,3 +122,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Local files and folders
+submissions/
+test/
+testcases/
+problems/
+executions/
+data/
