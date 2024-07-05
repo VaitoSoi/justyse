@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Response, status, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
-import db\
+import db
 
 api = FastAPI()
 
@@ -106,3 +106,5 @@ async def problem_delete(id: str, response: Response):
     else:
         response.status_code = status.HTTP_404_NOT_FOUND
         return f"Can find problem with id {id} D:"
+
+

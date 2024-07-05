@@ -1,6 +1,6 @@
 import typing
 import db.file as file
-import db.mixed as mixed
+import db.sql as sql
 from db.declare import Problems, config
 from fastapi import UploadFile
 
@@ -16,12 +16,12 @@ def get(
     return (
         (file_replace or file.__dict__[key] or raise_invalid_method(key))
         if config["place"] == "file"
-        else (mixed_replace or mixed.__dict__[key] or raise_invalid_method(key))
+        else (mixed_replace or sql.__dict__[key] or raise_invalid_method(key))
     )
 
 
-def mixed_typing(problems: Problems) -> mixed.Problems:
-    return mixed.Problems(
+def mixed_typing(problems: Problems) -> sql.Problems:
+    return sql.Problems(
         **{
             key: ",".join(map(str, value)) if isinstance(value, list) else value
             for key, value in problems.model_dump().items()
