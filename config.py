@@ -1,20 +1,16 @@
+import inquirer.questions
+from utils import write_json
 import inquirer
-import json
 import os
 import typing
 import socket
+
+cpu_rec = os.cpu_count() / 4
 
 
 def write_file(file: str, data: str) -> None:
     with open(file, "w") as f:
         f.write(data)
-
-
-def write_json(file: str, data: typing.Dict[str, typing.Any]) -> None:
-    with open(file, "w") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-
 
 
 translate = {
@@ -26,6 +22,8 @@ translate = {
         "pass_store": ["plain", "hashed"],
         "hash_func": ["bcrypt", "argon2", "scrypt", "pbkdf2", "sha512", "sha256"],
         "testcase_strict": ["strict", "loose"],
+        "judge_mode": ["single", "multi-testcase", "multi-submisison"],
+        "compress_threshold": [],
     },
     "vi": {
         "store_place": [
@@ -49,6 +47,19 @@ translate = {
             "Chọn cách xử lý các file testcase có đuôi khác với đuôi được khai báo",
             ["Báo lỗi", "Bỏ qua"],
         ],
+        "judge_mode": [
+            "Chọn chế độ chạy phân luồng",
+            [
+                "Đơn luồng",
+                "Đa luồng - Chia đều các test cho các luồng",
+                "Đa luồng - Mỗi luồng chạy một bài nộp",
+            ],
+        ],
+        "compress_threshold": [
+            "Chọn ngưỡng mà khi độ lớn của testcase vượt quá sẽ nén (đơn vị: byte)",
+            [],
+        ],
+        "done": ["Đã lưu config ở data/config.json"],
     },
     "en": {
         "store_place": [
@@ -72,6 +83,19 @@ translate = {
             "Choose how to handle testcase files with different extensions than declared",
             ["Error", "Ignore"],
         ],
+        "judge_mode": [
+            "Choose threading mode",
+            [
+                "Single",
+                "Multi - Evenly distribute tests to threads",
+                "Multi - Each thread runs a submission",
+            ],
+        ],
+        "compress_threshold": [
+            "Choose the threshold at which the size of the testcase will be compressed (unit: byte)",
+            [],
+        ],
+        "done": ["Saved config at data/config.json"],
     },
 }
 
@@ -89,16 +113,23 @@ config["lang"] = inquirer.prompt(
 
 translate = translate[config["lang"]] | {"choices": translate["choices"]}
 
+
 def get_translate(key, inp):
     return translate["choices"][key][translate[key][1].index(inp)]
 
-def prompt(key: str, call: typing.Callable) -> str:
+
+def prompt(
+    key: str,
+    call: typing.Callable,
+    validator: typing.Callable[[inquirer.questions.Question, typing.Any], bool] = None,
+) -> str:
     inp = inquirer.prompt(
         [
             call(
-                key,
-                translate[key][0],
-                translate[key][1],
+                name=key,
+                message=translate[key][0],
+                choices=translate[key][1],
+                validate=validator or True,
             )
         ]
     )[key]
@@ -125,16 +156,24 @@ config["pass_store"] = prompt("pass_store", inquirer.List)
 config["hash_func"] = (
     prompt("hash_func", inquirer.List) if config["pass_store"] == "hashed" else None
 )
-
-os.makedirs("data", exist_ok=True)
-write_json(
-    "data/config.json",
-    config | {"container_port": 80},
+config["testcase_strict"] = prompt("testcase_strict", inquirer.List)
+config["judge_mode"] = prompt("judge_mode", inquirer.List)
+config["compress_threshold"] = prompt(
+    "compress_threshold", inquirer.Text, validator=lambda _, a: a.isdigit()
 )
 
+write_json(
+    "data/config.json",
+    config,
+)
+
+os.makedirs("data", exist_ok=True)
+os.makedirs("data/problem", exist_ok=True)
+os.makedirs("data/file", exist_ok=True)
+os.makedirs("executions", exist_ok=True)
+
 if config["store_place"] == "sql":
-    os.makedirs("data/problems", exist_ok=True)
-    os.makedirs("data/file", exist_ok=True)
+    ...
 elif config["store_place"] == "file":
     os.makedirs("data/problems", exist_ok=True)
     os.makedirs("data/submissions", exist_ok=True)
@@ -142,6 +181,7 @@ elif config["store_place"] == "file":
     os.makedirs("data/file", exist_ok=True)
 
     write_json("data/problems/problems.json", {})
+    write_json("data/submissions/submissions.json", {})
     write_file("data/users/users.csv", "id,user,password")
 
-print("Created config file at data/config.json")
+print(translate["done"][0])

@@ -7,9 +7,12 @@ import os
 import uuid
 import zipfile
 import shutil
+import declare
+from utils import config
+from db.declare import file_dir, gen_path, submission_dir
+from declare import File
 from redis import Redis
 from fastapi import UploadFile
-from db.declare import file_dir, config, gen_path
 from sqlalchemy import create_engine, String, ForeignKey
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column, sessionmaker
 
@@ -32,18 +35,22 @@ class Problems(SQL_Base):
     accept_language: Mapped[str]
     test_name: Mapped[str]
     total_testcases: Mapped[int]
+    test_type: Mapped[str]
     roles: Mapped[typing.Optional[str]]
     dir: Mapped[str] = mapped_column(default=None)
     docs: Mapped[str] = mapped_column(default=None)
+    limit: Mapped[str]
+    mode: Mapped[str]
 
 
 class Submissions(SQL_Base):
     __tablename__ = "submissions"
-    id: Mapped[int] = mapped_column(primary_key=True, default=uuid.uuid4())
+    id: Mapped[str] = mapped_column(primary_key=True, default=uuid.uuid4())
     problem: Mapped[str] = mapped_column(ForeignKey("problems.id"))
-    language: Mapped[str] = mapped_column(default="cpp:17")
-    code: Mapped[str]
-    status: Mapped[str]
+    lang: Mapped[str]
+    compiler: Mapped[str]
+    file_path: Mapped[str]
+    result: Mapped[str] # Submissions as json.dump
 
 
 sql_engine = create_engine(f"sqlite:///{os.getcwd()}/data/wiwj.db")
@@ -88,7 +95,7 @@ async def add_problem(problem: Problems):
 async def add_problem_docs(id: str, file: UploadFile):
     problem = await get_problem(id)
     if problem is None:
-        raise ValueError('problem not found')
+        raise ValueError("problem not found")
     with open(f"{file_dir}/{file.filename}", "wb") as f:
         f.write(await file.read())
     await file.close()
@@ -99,8 +106,8 @@ async def add_problem_docs(id: str, file: UploadFile):
 async def add_problem_testcases(id: str, upfile: UploadFile):
     problem = await get_problem(id)
     if problem is None:
-        raise ValueError('problem not found')
-    
+        raise ValueError("problem not found")
+
     zip_file = upfile.filename
     with open(f"{problem['dir']}/{zip_file}", "wb") as f:
         f.write(await upfile.read())
@@ -130,13 +137,13 @@ async def add_problem_testcases(id: str, upfile: UploadFile):
         os.makedirs(f"{problem['dir']}/testcases/{i}")
         shutil.move(
             f"{problem['dir']}/testcase/{inps[i]}",
-            f"{problem['dir']}/testcase/{i}/{inps[i]}",
+            f"{problem['dir']}/testcases/{i}/{problem.test_name[0]}",
         )
         shutil.move(
             f"{problem['dir']}/testcase/{outs[i]}",
-            f"{problem['dir']}/testcase/{i}/{outs[i]}",
+            f"{problem['dir']}/testcases/{i}/{problem.test_name[1]}",
         )
-    
+
     shutil.rmtree(f"{problem['dir']}/testcase")
     os.remove(f"{problem['dir']}/{zip_file}")
 
@@ -152,14 +159,16 @@ async def update_problem(id, problem: Problems):
 async def update_problem_docs(id: str, file: UploadFile):
     problem = await get_problem(id)
     if problem is None:
-        raise ValueError('problem not found')
+        raise ValueError("problem not found")
     if problem.docs is None:
-        raise ValueError('problem docs not found')
+        raise ValueError("problem docs not found")
     with open(f"data/file/{problem.docs}", "wb") as f:
         f.write(await file.read())
     await file.close()
     return "Updated!"
 
+async def update_problem_testcases(id: str, file: UploadFile):
+    await add_problem_testcases(id, file)
 
 # DELETE
 async def delete_problem(id):
@@ -167,9 +176,35 @@ async def delete_problem(id):
     query = db.query(Problems).filter(Problems.id == id)
     problem = query.first()
     if problem is None:
-        raise ValueError('problem not found')
+        raise ValueError("problem not found")
     if problem.docs is not None:
         os.remove(os.path.join(file_dir, problem.docs))
     query.delete()
     db.commit()
+    db.close()
+
+"""
+Submission
+"""
+
+# GET
+async def get_submission_ids():
+    return [submission.id for submission in Session().query(Submissions).all()]
+
+async def get_submission(id: str):
+    return Session().query(Submissions).filter(Submissions.id == id).first()
+
+
+# POST 
+async def add_submission(submission: declare.Submissions):
+    submission["file_path"] = os.path.join(
+        submission_dir, File[submission.lang[0]].file.format(id=submission.id)
+    )
+    with open(submission["file_path"], "w") as file:
+        file.write(submission['code'])
+    del submission['code']
+    db = Session()
+    db.add(Submissions(**submission.model_dump()))
+    db.commit()
+    db.refresh(submission)
     db.close()

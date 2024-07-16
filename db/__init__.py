@@ -1,8 +1,10 @@
 import typing
-import db.file as file
-import db.sql as sql
-from db.declare import Problems, config
+import json
+from . import file, sql, declare
+from declare import Problems, Submissions
+from utils import config
 from fastapi import UploadFile
+
 
 def raise_invalid_method(key: str):
     raise ValueError(f"call invalid method {key}")
@@ -15,35 +17,86 @@ def get(
 ) -> typing.Awaitable:
     return (
         (file_replace or file.__dict__[key] or raise_invalid_method(key))
-        if config["place"] == "file"
+        if config["store_place"] == "file"
         else (mixed_replace or sql.__dict__[key] or raise_invalid_method(key))
     )
 
 
-def mixed_typing(problems: Problems) -> sql.Problems:
-    return sql.Problems(
+def mixed_typing(problems: Problems, callable: typing.Any) -> typing.Any:
+    return callable(
         **{
-            key: ",".join(map(str, value)) if isinstance(value, list) else value
+            key: json.dumps(value, separators=(",", ":"))
+            if isinstance(value, dict) or isinstance(value, int)
+            else value
             for key, value in problems.model_dump().items()
         }
     )
 
 
+__all__ = [
+    "file",
+    "sql",
+    "declare",
+    # Problems
+    "get_problem_ids",
+    "get_problem",
+    "get_problem_docs",
+    "add_problem",
+    "add_problem_docs",
+    "add_problem_testcases",
+    "update_problem",
+    "update_problem_docs",
+    "update_problem_testcases",
+    "delete_problem",
+    # Submissions
+    "get_submission_ids",
+    "get_submission",
+    "judge",
+    "add_submission",
+]
+
 """
 Problems
 """
-
-get_problem_ids: typing.Callable[[], typing.Awaitable[typing.List[str]]] = get("get_problem_ids")
+get_problem_ids: typing.Callable[[], typing.Awaitable[typing.List[str]]] = get(
+    "get_problem_ids"
+)
 get_problem: typing.Callable[[str], typing.Awaitable[Problems]] = get("get_problem")
-get_problem_docs: typing.Callable[[str], typing.Awaitable[str | None]] = get("get_problem_docs")
+get_problem_docs: typing.Callable[[str], typing.Awaitable[str | None]] = get(
+    "get_problem_docs"
+)
 add_problem: typing.Callable[[Problems], typing.Awaitable[None]] = get(
     "add_problem",
     mixed_replace=mixed_typing,
 )
-add_problem_docs: typing.Callable[[str, UploadFile], typing.Awaitable[None]] = get("add_problem_docs")
-add_problem_testcases: typing.Callable[[str, UploadFile], typing.Awaitable[None]] = get("add_problem_testcases")
+add_problem_docs: typing.Callable[[str, UploadFile], typing.Awaitable[None]] = get(
+    "add_problem_docs"
+)
+add_problem_testcases: typing.Callable[[str, UploadFile], typing.Awaitable[None]] = get(
+    "add_problem_testcases"
+)
 update_problem: typing.Callable[[str, Problems], typing.Awaitable[None]] = get(
     "update_problem",
     mixed_replace=mixed_typing,
 )
+update_problem_docs: typing.Callable[[str, UploadFile], typing.Awaitable[None]] = get(
+    "update_problem_docs"
+)
+update_problem_testcases: typing.Callable[[str, UploadFile], typing.Awaitable[None]] = (
+    get("update_problem_testcases")
+)
 delete_problem: typing.Callable[[str], typing.Awaitable[None]] = get("delete_problem")
+
+"""
+Submission
+"""
+get_submission_ids: typing.Callable[[], typing.Awaitable[typing.List[str]]] = get(
+    "get_submission_ids"
+)
+get_submission: typing.Callable[[str], typing.Awaitable[Submissions]] = get(
+    "get_submission"
+)
+
+add_submission: typing.Callable[[Submissions], typing.Awaitable[None]] = get(
+    "add_submission"
+)

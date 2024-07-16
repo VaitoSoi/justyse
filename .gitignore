@@ -124,9 +124,5 @@ dmypy.json
 .pyre/
 
 # Local files and folders
-submissions/
 test/
-testcases/
-problems/
-executions/
 data/
