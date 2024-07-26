@@ -14,12 +14,13 @@ from fastapi.websockets import WebSocketDisconnect
 import db
 import declare
 import utils
-from judge import judge, judge_loop
+from judge import JudgeManager
 
 """
 Init
 """
 abort = threading.Event()
+judge
 loop = threading.Thread(target=asyncio.run, args=(judge_loop(abort=abort),))
 logger: logging.Logger
 

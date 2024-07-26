@@ -1,256 +1,325 @@
-import asyncio
+import datetime
 import json
 import logging
 import os
 import queue
 import threading
+import time
 import typing
 import zlib
 
+import pydantic
 import websockets
+import websockets.sync.client as ws_sync
 
 import db
 import declare
 import utils
 
-logger = logging.getLogger("uvicorn.error")
-judge_mode = utils.config["judge_mode"]
-jugde_queue = queue.Queue()
-jugde_server: typing.List[typing.List[typing.Union[str, typing.Literal["idle", "busy"]]]]
-if judge_mode == 0:
-    jugde_server = [0, *utils.config["judge_server"]]
-else:
-    jugde_server = [[ip, "idle"] for ip in utils.config["judge_server"]]
+
+class ServerBusy(Exception):
+    pass
 
 
-async def _send(conn: websockets.WebSocketClientProtocol, data: typing.Any):
-    await conn.send(json.dumps(data))
+class MissingField(ValueError):
+    pass
 
 
-def judge(submission_id: str, msg_queue: queue.Queue):
-    msg_queue.put({"status": "wating"})
-    jugde_queue.put((submission_id, msg_queue))
+class JudgeClient:
+    _send: typing.Callable[[typing.Any], typing.Awaitable[None]]
+    logger = logging.getLogger("uvicorn.error")
+    ws: ws_sync.ClientConnection
+    is_juding: bool = False
 
+    def __init__(self, urls):
+        self.ws = ws_sync.connect(urls)
 
-async def judge_loop(abort: threading.Event):
-    while True:
-        if abort.is_set():
-            break
-        if not jugde_queue.empty():
-            submission_id: str
-            msg: queue.Queue
-            submission_id, msg = jugde_queue.get()
-            submission = await db.get_submission(submission_id)
-            problem = await db.get_problem(submission["problem"])
+    def send(self, data: typing.Any):
+        """
+        Send data to the server.
+        """
 
-            if judge_mode == 0:
-                idle_server = utils.find("idle", jugde_server)
-                if idle_server == -1:
-                    jugde_queue.put((submission_id, msg))
-                    await asyncio.sleep(5)
-                    continue
-                jugde_server[idle_server][1] = "busy"
+        if isinstance(data, dict) or isinstance(data, list) or isinstance(data, tuple):
+            data = json.dumps(data)
+        elif isinstance(data, pydantic.BaseModel):
+            data = data.model_dump_json()
 
-                msg.put({"status": "judging"})
+        return self.ws.send(data)
 
-                server = None
+    def status(self) -> typing.Literal['idle', 'busy']:
+        self.send(["status"])
+        data = json.loads(self.ws.recv())
+        return data['status']
 
-                try:
-                    server = await websockets.connect(
-                        f"{jugde_server[idle_server][0]}/jugde"
-                    )
-                except websockets.exceptions.InvalidURI:
-                    raise ValueError("invalid jugde server uri")
-                except (OSError, websockets.exceptions.InvalidHandshake) as e:
-                    logger.error(
-                        "judge server raise exception while connecting: ", str(e)
-                    )
-                    msg.put({"status": "internal error"})
-                    await asyncio.sleep(1)
-                    continue
+    def init(self,
+             submission: db.Submissions,
+             problem: db.Problems,
+             test_range: typing.Tuple[int, int],
+             msg: queue.Queue):
 
-                async def send(data: typing.Any):
-                    await _send(server, data)
+        msg.put({'status': 'initing'})
 
-                if abort.is_set():
-                    break
-                else:
-                    msg.put({"status": "initing"})
+        return self.send([
+            'init',
+            declare.JudgeSession(
+                submission_id=submission.id,
+                language=submission.lang,
+                compiler=submission.compiler,
+                test_range=test_range,
+                test_file=problem.test_name,
+                test_type=problem.test_type,
+                judge_mode=problem.mode,
+                limit=problem.limit
+            ).model_dump()
+        ])
 
-                await send(
-                    [
-                        "init",
-                        declare.JudgeSession(
-                            submission_id=submission_id,
-                            language=submission["lang"],
-                            compiler=submission["compiler"],
-                            test_range=(1, problem["total_testcases"]),
-                            test_file=problem["test_name"],
-                            test_type=problem["test_type"],
-                            judge_mode=declare.JudgeMode(**problem["mode"]),
-                            limit=declare.Limit(**problem["limit"]),
-                        ).model_dump_json(),
-                    ]
-                )
+    def code(self, path: str):
+        code = utils.read(path)
+        code_compress = len(code) > utils.config.compress_threshold
+        if code_compress:
+            code = zlib.compress(code)
+        return self.send(['code', [code, code_compress]])
 
-                code = utils.read(submission["file_path"])
-                compress = (
-                        os.path.getsize(submission["file_path"])
-                        > utils.config["compress_threshold"]
-                )
-                if compress:
-                    code = zlib.compress(code)
+    def testcases(self, problem: db.Problems, test_range: typing.Tuple[int, int]):
+        test_dir = os.path.join(problem.dir, "testcases")
+        for i in range(test_range[0], test_range[1] + 1):
+            input_file = os.path.join(test_dir, str(i), problem.test_name[0])
+            output_file = os.path.join(test_dir, str(i), problem.test_name[1])
+            input_content = utils.read(input_file)
+            output_content = utils.read(output_file)
 
-                await send(["code", [code, compress]])
+            if not input_content and not output_content:
+                self.logger.error(f"input file or output file of test {i} is empty")
 
-                if abort.is_set():
-                    break
-                else:
-                    msg.put({"status": "sending testcases"})
+            total_size = os.path.getsize(input_file) + os.path.getsize(output_file)
+            compress = total_size >= utils.config.compress_threshold
+            if compress:
+                input_content = zlib.compress(input_content)
+                output_content = zlib.compress(output_content)
 
-                test_dir = os.path.join(problem["dir"], "testcases")
-                for i in range(1, problem["total_testcases"] + 1):
-                    input_file = os.path.join(test_dir, str(i), problem["test_name"][0])
-                    output_file = os.path.join(
-                        test_dir, str(i), problem["test_name"][1]
-                    )
-                    input_content = utils.read(input_file)
-                    output_content = utils.read(output_file)
+            self.send(["testcase", [i, input_content, output_content, compress]])
 
-                    if not input_content and not output_content:
-                        logger.error(f"input file or output file of test {problem.id}:{i} is empty")
+    def judge(self,
+              submission: db.Submissions,
+              problem: db.Problems,
+              test_range: typing.Tuple[int, int],
+              msg: queue.Queue,
+              abort: threading.Event,
+              skip_debug: bool = True,
+              log_path: typing.Optional[str] = None):
+        if self.is_juding:
+            raise ServerBusy()
+        self.is_juding = True
+        judge_result = []
+        debug = []
 
-                    total_size = os.path.getsize(input_file) + os.path.getsize(
-                        output_file
-                    )
-                    compress = total_size >= utils.config["compress_threshold"]
-                    if compress:
-                        input_content = zlib.compress(input_content)
-                        output_content = zlib.compress(output_content)
+        status = self.status()
+        if status == "busy":
+            raise ServerBusy()
 
-                    await send(
-                        ["testcase", [i, input_content, output_content, compress]]
-                    )
+        self.send(['start', None])
+        self.init(submission=submission, problem=problem, test_range=test_range, msg=msg)
+        self.code(path=submission.file_path)
+        self.testcases(problem=problem, test_range=test_range)
 
-                if abort.is_set():
-                    break
-                else:
-                    msg.put({"status": "judging"})
+        msg.put({'status': 'judging'})
+        self.send(["judge", None])
 
-                await send(["judge", None])
+        while True:
+            if abort.is_set():
+                return msg.put_nowait({'status': 'aborted'})
 
-                while True:
-                    if abort.is_set():
+            try:
+                response = self.ws.recv()
+            except websockets.ConnectionClosed:
+                break
+            else:
+                response = json.loads(response)
+
+                match response["status"]:
+                    case 'result':
+                        judge_result.append(response)
+                        msg.put_nowait({'status': 'result', 'data': response['data']})
+
+                    case 'done':
                         break
 
-                    try:
-                        response = await server.recv()
-                        response = json.loads(response)
-                    except websockets.exceptions.ConnectionClosed:
-                        break
-                    if response[0] == "result":
-                        msg.put({"result": response[1]})
+                    case _:
+                        debug.append(response)
+                        if skip_debug is False:
+                            msg.put_nowait({'status': 'debug', 'data': response})
 
-                jugde_server[idle_server][1] = "idle"
-                msg.put("close")
-            elif judge_mode == 1:
-                if jugde_server[0] == "idle":
-                    jugde_queue.put((submission_id, msg))
-                jugde_server[0] = "busy"
+        msg.put_nowait({'status': 'done'})
+        log = {
+            "SubmissionID": submission.id,
+            "ProblemID": problem.id,
+            "Debug": debug,
+            "Result": judge_result
+        }
+        # if not os.path.exists(os.path.dirname(log_path)):
+        #     os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        if log_path:
+            utils.write_json(log_path, log)
+        self.is_juding = False
 
-                msg.put({"status": "judging"})
 
-                connection: typing.List[websockets.WebSocketClientProtocol] = []
-                for i in jugde_server[1:]:
-                    try:
-                        connection.append(await websockets.connect(f"{i[0]}/jugde"))
-                    except websockets.exceptions.InvalidURI:
-                        raise ValueError("invalid jugde server uri")
-                    except (OSError, websockets.exceptions.InvalidHandshake) as e:
-                        logger.error(f"judge server {i} raise", str(e))
-                        msg.put({"status": "internal error"})
-                        continue
+class JudgeManager:
+    judge_queue: queue.Queue = queue.Queue()
+    loop_abort: threading.Event = threading.Event()
+    conenctions: typing.List[JudgeClient]
+    logger: logging.Logger = logging.getLogger("uvicorn.error")
+    threads: typing.List[threading.Thread] = []
 
-                if len(connection) == 0:
-                    jugde_server[0] = "idle"
-                    msg.put("close")
-                    await asyncio.sleep(5)
+    def __init__(self):
+        self.conenctions = []
+
+    def connect(self, uris: str):
+        for uri in uris:
+            try:
+                client = JudgeClient(f"{uri}/session")
+            except websockets.exceptions.InvalidURI as error:
+                raise ValueError("invalid jugde server uri") from error
+            except (OSError, websockets.exceptions.InvalidHandshake) as error:
+                self.logger.error(f"judge server raise exception while connecting: {str(error)}")
+            else:
+                self.conenctions.append(client)
+                self.logger.info(f"connected to {uri}")
+        return self.conenctions
+
+    def status(self):
+        return [client.status() for client in self.conenctions if not client.is_juding]
+
+    def idle(self):
+        return all([status == 'idle' for status in self.status()])
+
+    def is_free(self):
+        return (
+            "idle" in self.status() and len(self.threads) < len(self.conenctions)
+            if utils.config.judge_mode == 0 else
+            self.idle() and len(self.threads) == 0
+        )
+
+    def clear_thread(self):
+        self.threads = [thread for thread in self.threads if thread.is_alive()]
+
+    def join_threads(self, clean_thread):
+        for thread in self.threads:
+            if thread.is_alive():
+                thread.join()
+
+        if clean_thread:
+            self.clear_thread()
+
+    def add_submission(self, submission_id: str, msg: queue.Queue, abort: threading.Event):
+        msg.put({'status': 'waiting'})
+        self.judge_queue.put((submission_id, msg, abort))
+
+    def loop(self):
+        while True:
+            if self.loop_abort.is_set():
+                break
+
+            self.clear_thread()
+
+            if not self.judge_queue.empty() and self.is_free():
+                submission_id, msg, abort = self.judge_queue.get()
+                submission = db.get_submission(submission_id)
+                if submission is None:
+                    msg.put({'error': 'submission not found'})
+                    continue
+                problem = db.get_problem(submission.problem)
+                if problem is None:
+                    msg.put({'error': 'problem not found'})
                     continue
 
-                async def send(data: typing.Any):
-                    for conn in connection:
-                        await _send(conn, data)
+                if not abort.is_set():
+                    try:
+                        if utils.config.judge_mode == 0:
+                            self.judge_psps(submission=submission, problem=problem, msg=msg, abort=abort)
+                        else:
+                            self.judge_ptps(submission=submission, problem=problem, msg=msg, abort=abort)
+                    except ServerBusy:
+                        self.judge_queue.put((submission_id, msg, abort))
+                else:
+                    msg.put({'status': 'abort'})
 
-                async def sends(datas: typing.Iterable[typing.Any]):
-                    for data, conn in zip(datas, connection):
-                        await _send(conn, data)
+            time.sleep(1)
 
-                test_chunk = utils.chunks(
-                    list(range(1, problem["total_testcases"] + 1)),
-                    len(connection),
-                )
+    def judge_psps(self,
+                   submission: db.Submissions,
+                   problem: db.Problems,
+                   msg: queue.Queue,
+                   abort: threading.Event):
+        index = [
+            i for i, client in enumerate(self.conenctions)
+            if not client.is_juding and client.status() == 'idle'
+        ]
+        if len(index) == 0:
+            raise ServerBusy()
+        connection = self.conenctions[index[0]]
 
-                await sends(
-                    [
-                        [
-                            "init",
-                            declare.JudgeSession(
-                                submission_id=submission_id,
-                                language=submission["lang"],
-                                compiler=submission["compiler"],
-                                test_range=(chunk[0], chunk[-1]),
-                                test_file=problem["test_name"],
-                                test_type=problem["test_type"],
-                                judge_mode=declare.JudgeMode(**problem["mode"]),
-                                limit=declare.Limit(**problem["limit"]),
-                            ).model_dump(),
-                        ]
-                        for chunk in test_chunk
-                    ]
-                )
+        now = datetime.datetime.now()
+        thread = threading.Thread(
+            target=connection.judge,
+            kwargs={
+                'submission': submission,
+                'problem': problem,
+                'test_range': (1, problem.total_testcases),
+                'msg': msg,
+                'abort': abort,
+                'log_path': os.path.join(submission.dir, f"{now.strftime('%Y-%m-%d_%H:%M:%S')}_logging.json")
+            }
+        )
+        thread.start()
+        self.threads.append(thread)
 
-                for c_index, chunk in enumerate(test_chunk):
-                    for t_index, test in enumerate(chunk):
-                        input_file = os.path.join(
-                            problem["dir"],
-                            "testcases",
-                            str(test),
-                            problem["test_name"][0],
-                        )
-                        output_file = os.path.join(
-                            problem["dir"],
-                            "testcases",
-                            str(test),
-                            problem["test_name"][1],
-                        )
-                        input_content = utils.read(input_file)
-                        output_content = utils.read(output_file)
+        return
 
-                        if not input_content or not output_content:
-                            logger.error(f"input file or output file of test {problem.id}:{t_index} is empty")
-                            continue
+    def judge_ptps(self,
+                   submission: db.Submissions,
+                   problem: db.Problems,
+                   msg: queue.Queue,
+                   abort: threading.Event):
 
-                        total_size = os.path.getsize(input_file) + os.path.getsize(
-                            output_file
-                        )
-                        compress = total_size >= utils.config["compress_threshold"]
-                        if compress:
-                            input_content = zlib.compress(input_content)
-                            output_content = zlib.compress(output_content)
+        test_chunk = utils.chunks(range(1, problem.total_testcases + 1), len(self.conenctions))
 
-                        await _send(
-                            connection[c_index],
-                            (
-                                [
-                                    "testcase",
-                                    [
-                                        test,
-                                        input_content,
-                                        output_content,
-                                        compress,
-                                    ],
-                                ]
-                            ),
-                        )
+        now = datetime.datetime.now()
+        log_dir = os.path.join(submission.dir, now.strftime("%Y-%m-%d_%H:%M:%S"))
+        os.makedirs(log_dir, exist_ok=False)
 
-        await asyncio.sleep(1)
+        self.join_threads(True)
+        judge_msg = queue.Queue()
+        for i, chunk in enumerate(test_chunk):
+            connection = self.conenctions[i]
+            thread = threading.Thread(
+                target=connection.judge,
+                kwargs={
+                    'submission': submission,
+                    'problem': problem,
+                    'test_range': (chunk[0], chunk[-1]),
+                    'msg': judge_msg,
+                    'abort': abort,
+                    'log_path': os.path.join(submission.dir, now.strftime("%Y-%m-%d_%H:%M:%S"), f"js_{i}.json")
+                }
+            )
+            thread.start()
+            self.threads.append(thread)
+
+        def running_thread():
+            return all([thread.is_alive() for thread in self.threads])
+
+        statuss = {}
+        while running_thread() or not judge_msg.empty():
+            message = judge_msg.get()
+            if message['status'] in ['initing', 'judging', 'done']:
+                if message['status'] not in statuss:
+                    statuss[message['status']] = 0
+                statuss[message['status']] += 1
+
+                if statuss[message['status']] == len(self.threads):
+                    msg.put(message)
+                    del statuss[message['status']]
+            elif message['status'] == 'debug':
+                pass
+            else:
+                msg.put(message)

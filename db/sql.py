@@ -1,63 +1,56 @@
 """
 For mixing-stored type
 """
-
-import typing
 import os
+import typing
 import uuid
-import zipfile
-import shutil
-import declare
-from utils import config
-from db.declare import file_dir, gen_path, submission_dir
-from declare import File
-from redis import Redis
+
 from fastapi import UploadFile
-from sqlalchemy import create_engine, String, ForeignKey
-from sqlalchemy.orm import declarative_base, Mapped, mapped_column, sessionmaker
+from sqlmodel import create_engine, SQLModel, Session, select
 
-SQL_Base = declarative_base()
-
-
-class Users(SQL_Base):
-    __tablename__ = "users"
-    id: Mapped[int] = mapped_column(primary_key=True, default=uuid.uuid4())
-    name: Mapped[str]
-    password: Mapped[typing.Optional[str]]
-    auth: Mapped[typing.Optional[str]] = mapped_column(default=None)
-
-
-class Problems(SQL_Base):
-    __tablename__ = "problems"
-    id: Mapped[str] = mapped_column(primary_key=True, default=uuid.uuid4().hex)
-    title: Mapped[str] = mapped_column(String(32))
-    description: Mapped[str]
-    accept_language: Mapped[str]
-    test_name: Mapped[str]
-    total_testcases: Mapped[int]
-    test_type: Mapped[str]
-    roles: Mapped[typing.Optional[str]]
-    dir: Mapped[str] = mapped_column(default=None)
-    docs: Mapped[str] = mapped_column(default=None)
-    limit: Mapped[str]
-    mode: Mapped[str]
+from declare import File
+from .declare import (
+    file_dir,
+    submission_dir,
+    gen_path,
+    unzip_testcases,
+    Problems,
+    Submissions,
+    DBProblem,
+    DBSubmission
+)
+from .exception import (
+    ProblemNotFound,
+    ProblemAlreadyExisted,
+    ProblemDocsAlreadyExist,
+    ProblemDocsNotFound,
+    SubmissionNotFound,
+    SubmissionAlreadyExist
+)
 
 
-class Submissions(SQL_Base):
-    __tablename__ = "submissions"
-    id: Mapped[str] = mapped_column(primary_key=True, default=uuid.uuid4())
-    problem: Mapped[str] = mapped_column(ForeignKey("problems.id"))
-    lang: Mapped[str]
-    compiler: Mapped[str]
-    file_path: Mapped[str]
-    result: Mapped[str] # Submissions as json.dump
+# class SQLUsers(SQL_Base):
+#     __tablename__ = "users"
+#     id: Mapped[int] = mapped_column(primary_key=True, default=uuid.uuid4())
+#     name: Mapped[str]
+#     password: Mapped[typing.Optional[str]]
+#     auth: Mapped[typing.Optional[str]] = mapped_column(default=None)
 
 
-sql_engine = create_engine(f"sqlite:///{os.getcwd()}/data/wiwj.db")
+class SQLProblems(DBProblem, table=True):
+    pass
 
-SQL_Base.metadata.create_all(sql_engine)
-redis_client = Redis(host="localhost", port=6379, db=0)
-Session = sessionmaker(bind=sql_engine)
+
+class SQLSubmissions(DBSubmission, table=True):
+    pass
+
+
+sql_engine = create_engine(f"sqlite:///{os.getcwd()}/data/wiwj.db", echo=True)
+
+
+def create_all():
+    SQLModel.metadata.create_all(sql_engine)
+
 
 """
 Problems
@@ -65,146 +58,151 @@ Problems
 
 
 # GET
-async def get_problem_ids():
-    return [problem.id for problem in Session().query(Problems).all()]
+def get_problem_ids() -> typing.List[str]:
+    with Session(sql_engine) as session:
+        statement = select(SQLProblems)
+        return [problem.id for problem in session.exec(statement).all()]
 
 
-async def get_problem(id: str):
-    return Session().query(Problems).filter(Problems.id == id).first()
+def get_problem(id: str) -> typing.Optional[DBProblem]:
+    if id not in get_problem_ids():
+        raise ProblemNotFound(id)
 
-
-async def get_problem_docs(id: str):
-    problem = await get_problem(id)
+    with Session(sql_engine) as session:
+        statement = select(SQLProblems).where(SQLProblems.id == id)
+        problem = session.exec(statement).first()
     if problem is None:
-        return None
-    if problem.docs is None:
-        return None
-    return os.path.join(problem.dir, problem.docs)
+        raise ProblemNotFound(id)
+
+    return problem
+
+
+def get_problem_docs(id: str) -> str:
+    problem = get_problem(id)
+    if not problem.description.startswith("docs:"):
+        return ProblemDocsNotFound(id)
+    return problem.description[5:]
 
 
 # POST
-async def add_problem(problem: Problems):
-    db = Session()
+def add_problem(problem: Problems):
+    if problem.id in get_problem_ids():
+        raise ProblemAlreadyExisted(problem.id)
+
+    problem = DBProblem(**problem.model_dump())
     problem.dir = gen_path(problem.id)
-    db.add(problem)
-    db.commit()
-    db.refresh(problem)
-    db.close()
+    try:
+        os.makedirs(problem.dir, exist_ok=False)
+    except OSError:
+        raise ProblemAlreadyExisted(problem.id)
+
+    with Session(sql_engine) as session:
+        session.add(problem)
+        session.commit()
 
 
-async def add_problem_docs(id: str, file: UploadFile):
-    problem = await get_problem(id)
-    if problem is None:
-        raise ValueError("problem not found")
+def add_problem_docs(id: str, file: UploadFile):
+    problem = get_problem(id)
+
+    if problem.description.startswith("docs:"):
+        raise ProblemDocsAlreadyExist(id)
+
+    file.filename = f"{uuid.uuid4().__str__()}.pdf"
     with open(f"{file_dir}/{file.filename}", "wb") as f:
-        f.write(await file.read())
-    await file.close()
-    problem["docs"] = file.filename
-    await update_problem(id, problem)
+        f.write(file.file.read())
+
+    file.file.close()
+    problem.description = f"docs:{file.filename}"
+    update_problem(id, problem)
 
 
-async def add_problem_testcases(id: str, upfile: UploadFile):
-    problem = await get_problem(id)
-    if problem is None:
-        raise ValueError("problem not found")
+def add_problem_testcases(id: str, upfile: UploadFile):
+    problem = get_problem(id)
 
-    zip_file = upfile.filename
-    with open(f"{problem['dir']}/{zip_file}", "wb") as f:
-        f.write(await upfile.read())
-    await upfile.close()
-    with zipfile.ZipFile(f"{problem['dir']}/{zip_file}", "r") as zip_ref:
-        zip_ref.extractall(f"{problem['dir']}/testcase")
-    problem["test_name"] = problem.test_name.split(",")
-    inp_ext = problem["test_name"][0].split(".")[-1]
-    out_ext = problem["test_name"][1].split(".")[-1]
-    inps = []
-    outs = []
-    for root, dirs, files in os.walk(f"{problem['dir']}/testcase"):
-        for file in files:
-            if file.endswith(f"{inp_ext}"):
-                inps.append(file)
-            elif file.endswith(f"{out_ext}"):
-                outs.append(file)
-            else:
-                if config["testcase_strict"] == "strict":
-                    raise ValueError(f"invalid testcase file: {file}")
-    inps.sort()
-    outs.sort()
-    if problem.total_testcases != len(inps) or problem.total_testcases != len(outs):
-        raise ValueError("invalid testcases count")
+    if not problem:
+        raise ProblemNotFound(id)
 
-    for i in range(len(inps)):
-        os.makedirs(f"{problem['dir']}/testcases/{i}")
-        shutil.move(
-            f"{problem['dir']}/testcase/{inps[i]}",
-            f"{problem['dir']}/testcases/{i}/{problem.test_name[0]}",
-        )
-        shutil.move(
-            f"{problem['dir']}/testcase/{outs[i]}",
-            f"{problem['dir']}/testcases/{i}/{problem.test_name[1]}",
-        )
-
-    shutil.rmtree(f"{problem['dir']}/testcase")
-    os.remove(f"{problem['dir']}/{zip_file}")
+    unzip_testcases(problem, upfile)
 
 
-# PUT
-async def update_problem(id, problem: Problems):
-    db = Session()
-    db.query(Problems).filter(Problems.id == id).update(problem)
-    db.commit()
-    db.close()
+# PATCH
+def update_problem(id, problem_: Problems):
+    if id not in get_problem_ids():
+        raise ProblemNotFound(id)
+
+    with Session(sql_engine) as session:
+        statement = select(SQLProblems).where(SQLProblems.id == id)
+        problem = session.exec(statement).first()
+
+        if problem.id != id:
+            delete_problem(id)
+
+        for key, val in problem_.model_dump().items():
+            setattr(problem, key, val)
+
+        session.add(problem)
 
 
-async def update_problem_docs(id: str, file: UploadFile):
-    problem = await get_problem(id)
-    if problem is None:
-        raise ValueError("problem not found")
-    if problem.docs is None:
-        raise ValueError("problem docs not found")
-    with open(f"data/file/{problem.docs}", "wb") as f:
-        f.write(await file.read())
-    await file.close()
-    return "Updated!"
+def update_problem_docs(id: str, file: UploadFile):
+    problem = get_problem(id)
+    if not problem.description.startswith("docs:"):
+        raise ProblemDocsNotFound(id)
 
-async def update_problem_testcases(id: str, file: UploadFile):
-    await add_problem_testcases(id, file)
+    with open(f"data/file/{problem.description[5:]}", "wb") as f:
+        f.write(file.file.read())
+    file.file.close()
+
+
+def update_problem_testcases(id: str, file: UploadFile):
+    add_problem_testcases(id, file)
+
 
 # DELETE
-async def delete_problem(id):
-    db = Session()
-    query = db.query(Problems).filter(Problems.id == id)
-    problem = query.first()
-    if problem is None:
-        raise ValueError("problem not found")
-    if problem.docs is not None:
-        os.remove(os.path.join(file_dir, problem.docs))
-    query.delete()
-    db.commit()
-    db.close()
+def delete_problem(id):
+    problem = get_problem(id)
+    if problem.description.startswith("docs:"):
+        os.remove(os.path.join(file_dir, problem.description[5:]))
+
+    with Session(sql_engine) as session:
+        session.delete(problem)
+        session.commit()
+
 
 """
 Submission
 """
 
-# GET
-async def get_submission_ids():
-    return [submission.id for submission in Session().query(Submissions).all()]
 
-async def get_submission(id: str):
-    return Session().query(Submissions).filter(Submissions.id == id).first()
+# GET
+def get_submission_ids() -> typing.List[str]:
+    with Session(sql_engine) as session:
+        statement = select(SQLSubmissions)
+        return session.exec(statement).all()
+
+
+def get_submission(id: str) -> typing.Optional[Submissions]:
+    if id not in get_problem_ids():
+        raise SubmissionNotFound()
+    with Session(sql_engine) as session:
+        statement = select(SQLSubmissions).where(SQLSubmissions.id == id)
+        submission = session.exec(statement).first()
+    if not submission:
+        raise SubmissionNotFound(id)
+    return submission
 
 
 # POST 
-async def add_submission(submission: declare.Submissions):
-    submission["file_path"] = os.path.join(
-        submission_dir, File[submission.lang[0]].file.format(id=submission.id)
-    )
+def add_submission(submission: Submissions):
+    if submission.id in get_submission_ids():
+        raise SubmissionAlreadyExist(submission.id)
+
     with open(submission["file_path"], "w") as file:
         file.write(submission['code'])
     del submission['code']
-    db = Session()
-    db.add(Submissions(**submission.model_dump()))
-    db.commit()
-    db.refresh(submission)
-    db.close()
+    submission = SQLSubmissions(**submission.model_dump())
+    submission["dir"] = os.path.join(submission_dir, submission.id)
+    submission["file_path"] = os.path.join(submission['dir'], File[submission.lang[0]].file.format(id=submission.id))
+
+    with Session(sql_engine) as session:
+        session.add(submission)
+        session.commit()

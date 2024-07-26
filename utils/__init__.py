@@ -1,20 +1,23 @@
-import typing
 import json
 import os
 import shutil
-from typing import Optional, Type, Any, Tuple, Callable
+import typing
 from copy import deepcopy
-from pydantic import BaseModel, create_model
-from pydantic.fields import FieldInfo
+from typing import Optional, Any, Tuple, Callable
+
+import pydantic
+import sqlmodel
+
+from declare import Indexable
 
 
-class Config(BaseModel):
+class Config(Indexable):
     lang: str
     store_place: typing.Literal["file", "sql"]
     cache_place: typing.Literal["redis"]
     login_methods: typing.List[typing.Literal["pwd", "google", "facebook"]]
     pass_store: typing.Literal["plain", "hashed"]
-    hash_func: typing.Literal["bcrypt", "argon2", "scrypt", "pbkdf2", "sha512", "sha256"]
+    hash_func: typing.Literal[None, "bcrypt", "argon2", "scrypt", "pbkdf2", "sha512", "sha256"]
     container_port: int
     testcase_strict: typing.Literal["strict", "loose"]
     compress_threshold: int
@@ -47,25 +50,36 @@ def delete_content(folder: str) -> None:
             shutil.rmtree(file_path)
 
 
+def dumps(data: typing.Any, **kwargs) -> str:
+    if isinstance(data, dict) or isinstance(data, list) or isinstance(data, tuple):
+        return json.dumps(data, **kwargs)
+    else:
+        return data
+
+
 config = Config(**read_json(f"{os.getcwd()}/data/config.json"))
 
 
-# https://stackoverflow.com/a/76560886/17106809
-def partial_model(model: Type[BaseModel]):
+def partial_model(model: sqlmodel.SQLModel):
+    """
+    Create a partial model from a pydantic.BaseModel
+    From https://stackoverflow.com/a/76560886/17106809
+    """
+
     def make_field_optional(
-            field: FieldInfo,
+            field: pydantic.fields.FieldInfo,
             default: Any = None,
             default_factory: Callable[[], typing.Any] = lambda: None,
-    ) -> Tuple[Any, FieldInfo]:
+    ) -> Tuple[Any, pydantic.fields.FieldInfo]:
         new = deepcopy(field)
         new.default = default
         new.default_factory = default_factory
         new.annotation = Optional[field.annotation]  # type: ignore
         return new.annotation, new
 
-    return create_model(
-        f"Partial{model.__name__}",
-        __base__=model,
+    return pydantic.create_model(
+        model.__name__,
+        __base__=sqlmodel.SQLModel,
         __module__=model.__module__,
         **{
             field_name: make_field_optional(field_info)
@@ -83,9 +97,11 @@ def find(key: typing.Any, arr: typing.List[typing.Any]) -> int:
     return -1
 
 
-# https://stackoverflow.com/a/54802737/17106809
 def chunks(arr: typing.Union[typing.List[typing.Any], typing.Tuple], n: int):
-    """Yield n number of sequential chunks from list."""
+    """
+    Yield n number of sequential chunks from list.
+    From: https://stackoverflow.com/a/54802737/17106809
+    """
     d, r = divmod(len(arr), n)
     for i in range(n):
         si = (d + 1) * (i if i < r else r) + d * (0 if i < r else i - r)
