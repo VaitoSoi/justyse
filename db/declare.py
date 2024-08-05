@@ -3,10 +3,12 @@ import shutil
 import typing
 import uuid
 import zipfile
+import datetime
 
 import sqlmodel
 from fastapi import UploadFile
 
+import utils
 from declare import Limit, JudgeResult, JudgeMode, Indexable, TestType
 from utils import config
 from .exception import ProblemNotFound, InvalidTestcaseExtension, InvalidTestcaseCount
@@ -20,29 +22,52 @@ class Problems(Indexable):
     accept_language: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     test_name: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     total_testcases: int
-    test_type: TestType
+    test_type: str
     roles: typing.Optional[typing.List[str]] | str = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     limit: Limit = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     mode: JudgeMode = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
-class DBProblem(Problems):
+class DBProblems(Problems):
     dir: str = sqlmodel.Field(default=None)
+    created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+
+
+@utils.partial_model
+class UpdateProblems(Problems):
+    pass
+
+
+class SubmissionResult(Indexable):
+    status: int
+    warn: str | None
+    error: str | None
+    time: float | None
+    memory: tuple[float, float] | None
 
 
 class Submissions(Indexable):
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     problem: str = sqlmodel.Field(foreign_key="problems.id")
-    lang: typing.Tuple[str, typing.Optional[int]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
-    compiler: typing.Tuple[str, typing.Optional[int | str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
-    result: typing.Optional[JudgeResult] = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
+    lang: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+    compiler: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     code: typing.Optional[str] = sqlmodel.Field(default=None)
 
 
-class DBSubmission(Submissions):
+class DBSubmissions(Submissions):
     dir: str = sqlmodel.Field(default=None)
     file_path: str = sqlmodel.Field(default=None)
-    code: str = sqlmodel.Field(default=None)
+    result: typing.Optional[SubmissionResult] = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
+    created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+
+
+@utils.partial_model
+class UpdateSubmissions(Submissions):
+    pass
+
+
+class User(Indexable):
+    pass
 
 
 def gen_path(id: str) -> str:

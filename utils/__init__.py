@@ -1,19 +1,47 @@
 import json
 import os
-import shutil
 import typing
+import uuid
 from copy import deepcopy
 from typing import Optional, Any, Tuple, Callable
 
 import pydantic
 import sqlmodel
 
-from declare import Indexable
+from declare import PydanticIndexable
 
 
-class Config(Indexable):
+# class Timer:
+#     timeout: int
+#     loop: asyncio.AbstractEventLoop
+#     task: asyncio.Future
+#     callback: typing.Callable | typing.Awaitable | typing.Coroutine
+#
+#     def __init__(self,
+#                  timeout: int,
+#                  callback: typing.Callable | typing.Awaitable,
+#                  loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()):
+#         self.timeout = timeout
+#         self.loop = loop
+#         self.task = asyncio.ensure_future(self.wait(), loop=loop)
+#         self.callback = callback
+#
+#     async def wait(self):
+#         await asyncio.sleep(self.timeout)
+#         if asyncio.iscoroutinefunction(self.callback):
+#             await self.callback()
+#         elif asyncio.iscoroutine(self.callback):
+#             await self.callback
+#         else:
+#             self.callback()
+#
+#     def cancel(self):
+#         return self.task.cancel()
+
+
+class Config(PydanticIndexable):
     lang: str
-    store_place: typing.Literal["file", "sql"]
+    store_place: str
     cache_place: typing.Literal["redis"]
     login_methods: typing.List[typing.Literal["pwd", "google", "facebook"]]
     pass_store: typing.Literal["plain", "hashed"]
@@ -23,6 +51,7 @@ class Config(Indexable):
     compress_threshold: int
     judge_server: typing.List[str]
     judge_mode: typing.Literal[0, 1]
+    redis_server: str
 
 
 def read(file: str) -> typing.Optional[str]:
@@ -41,23 +70,23 @@ def write_json(file: str, data: typing.Dict[str, typing.Any]) -> None:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
-def delete_content(folder: str) -> None:
-    for directory in os.listdir(folder):
-        file_path = os.path.join(folder, directory)
-        if os.path.isfile(file_path):
-            os.unlink(file_path)
-        else:
-            shutil.rmtree(file_path)
-
-
-def dumps(data: typing.Any, **kwargs) -> str:
-    if isinstance(data, dict) or isinstance(data, list) or isinstance(data, tuple):
-        return json.dumps(data, **kwargs)
-    else:
-        return data
-
-
 config = Config(**read_json(f"{os.getcwd()}/data/config.json"))
+
+
+# def delete_content(folder: str) -> None:
+#     for directory in os.listdir(folder):
+#         file_path = os.path.join(folder, directory)
+#         if os.path.isfile(file_path):
+#             os.unlink(file_path)
+#         else:
+#             shutil.rmtree(file_path)
+#
+#
+# def dumps(data: typing.Any, **kwargs) -> str:
+#     if isinstance(data, dict) or isinstance(data, list) or isinstance(data, tuple):
+#         return json.dumps(data, **kwargs)
+#     else:
+#         return data
 
 
 def partial_model(model: sqlmodel.SQLModel):
@@ -106,3 +135,25 @@ def chunks(arr: typing.Union[typing.List[typing.Any], typing.Tuple], n: int):
     for i in range(n):
         si = (d + 1) * (i if i < r else r) + d * (0 if i < r else i - r)
         yield arr[si:si + (d + 1 if i < r else d)]
+
+
+def padding(arr: list | tuple, length: int, fill: typing.Any = None):
+    """
+    Pad the list to the specified length
+    """
+    return arr + ([fill] if isinstance(arr, list) else (fill,)) * (length - len(arr))
+
+
+def rand_uuid(node: tuple[int, int] | int = -1) -> str:
+    if (isinstance(node, int) and node not in range(-1, 5)) or \
+            (isinstance(node, tuple) and (node[0] not in range(-1, 5) or node[1] not in range(-1, 5))):
+        raise ValueError("Node must be between -1 and 3")
+
+    key = str(uuid.uuid4())
+    if isinstance(node, int):
+        if node == -1:
+            return key
+        else:
+            return key.split('-')[node]
+    else:
+        return key.split('-')[node[0]:node[1]]
