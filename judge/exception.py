@@ -40,3 +40,7 @@ class AlreadyConnected(ValueError):
 
 class Closed(Warning):
     pass
+
+
+class ConnectionError(InitalizationError):
+    pass

@@ -20,9 +20,9 @@ translate = {
         "cache_place": ["redis"],
         "login_methods": ["pwd", "google", "facebook"],
         "pass_store": ["plain", "hashed"],
-        "hash_func": ["bcrypt", "argon2", "scrypt", "pbkdf2", "sha512", "sha256"],
+        "hash_func": ["argon2", "scrypt", "sha512", "sha256"],
         "testcase_strict": ["strict", "loose"],
-        "judge_mode": ["single", "multi-testcase", "multi-submisison"],
+        "judge_mode": [1, 0],
         "compress_threshold": [],
     },
     "vi": {
@@ -41,7 +41,7 @@ translate = {
         ],
         "hash_func": [
             "Chọn hàm băm (hash function)",
-            ["bcrypt", "Argon2", "scrypt", "PBKDF2", "SHA-512", "SHA-256"],
+            ["Argon2", "Scrypt", "SHA-512", "SHA-256"],
         ],
         "testcase_strict": [
             "Chọn cách xử lý các file testcase có đuôi khác với đuôi được khai báo",
@@ -50,7 +50,6 @@ translate = {
         "judge_mode": [
             "Chọn chế độ chạy phân luồng",
             [
-                "Đơn luồng",
                 "Đa luồng - Chia đều các test cho các luồng",
                 "Đa luồng - Mỗi luồng chạy một bài nộp",
             ],
@@ -77,7 +76,7 @@ translate = {
         ],
         "hash_func": [
             "Choose hash function",
-            ["bcrypt", "Argon2", "scrypt", "PBKDF2", "SHA-512", "SHA-256"],
+            ["Argon2", "scrypt", "SHA-512", "SHA-256"],
         ],
         "testcase_strict": [
             "Choose how to handle testcase files with different extensions than declared",
@@ -86,7 +85,6 @@ translate = {
         "judge_mode": [
             "Choose threading mode",
             [
-                "Single",
                 "Multi - Evenly distribute tests to threads",
                 "Multi - Each thread runs a submission",
             ],
@@ -99,7 +97,7 @@ translate = {
     },
 }
 
-config = {}
+config: dict[str, str] = {}
 config["lang"] = inquirer.prompt(
     [
         inquirer.List(
@@ -153,19 +151,12 @@ config["store_place"] = prompt("store_place", inquirer.List)
 config["cache_place"] = prompt("cache_place", inquirer.List)
 config["login_methods"] = prompt("login_methods", inquirer.Checkbox)
 config["pass_store"] = prompt("pass_store", inquirer.List)
-config["hash_func"] = (
-    prompt("hash_func", inquirer.List) if config["pass_store"] == "hashed" else None
-)
+config["hash_func"] = prompt("hash_func", inquirer.List) if config["pass_store"] == "hashed" else None
 config["testcase_strict"] = prompt("testcase_strict", inquirer.List)
 config["judge_mode"] = prompt("judge_mode", inquirer.List)
-config["compress_threshold"] = prompt(
-    "compress_threshold", inquirer.Text, validator=lambda _, a: a.isdigit()
-)
+config["compress_threshold"] = prompt("compress_threshold", inquirer.Text, validator=lambda _, a: a.isdigit())
 
-write_json(
-    "data/config.json",
-    config,
-)
+write_json("data/config.json", config)
 
 os.makedirs("data", exist_ok=True)
 os.makedirs("data/problem", exist_ok=True)

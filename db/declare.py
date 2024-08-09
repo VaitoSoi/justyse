@@ -1,15 +1,16 @@
+import datetime
 import os
 import shutil
 import typing
 import uuid
 import zipfile
-import datetime
 
 import sqlmodel
 from fastapi import UploadFile
 
+# import declare
 import utils
-from declare import Limit, JudgeResult, JudgeMode, Indexable, TestType
+from declare import Limit, JudgeMode, Indexable
 from utils import config
 from .exception import ProblemNotFound, InvalidTestcaseExtension, InvalidTestcaseCount
 
@@ -20,7 +21,7 @@ class Problems(Indexable):
     title: str
     description: str = sqlmodel.Field(default="")
     accept_language: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
-    test_name: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+    test_name: typing.Tuple[str, str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     total_testcases: int
     test_type: str
     roles: typing.Optional[typing.List[str]] | str = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
@@ -47,8 +48,10 @@ class SubmissionResult(Indexable):
 
 
 class Submissions(Indexable):
+    __tablename__ = "submissions"
     id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     problem: str = sqlmodel.Field(foreign_key="problems.id")
+    by: str = sqlmodel.Field(foreign_key="users.id")
     lang: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     compiler: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     code: typing.Optional[str] = sqlmodel.Field(default=None)
@@ -57,8 +60,8 @@ class Submissions(Indexable):
 class DBSubmissions(Submissions):
     dir: str = sqlmodel.Field(default=None)
     file_path: str = sqlmodel.Field(default=None)
-    result: typing.Optional[SubmissionResult] = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+    result: typing.Optional[SubmissionResult] = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 @utils.partial_model
@@ -67,7 +70,26 @@ class UpdateSubmissions(Submissions):
 
 
 class User(Indexable):
+    __tablename__ = "users"
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    name: str
+    password: str
+    roles: typing.List[str] | None = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+
+
+class DBUser(User):
+    created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+
+
+@utils.partial_model
+class UpdateUser(User):
     pass
+
+
+# class JudgeResults(Indexable):
+#     id: str
+#     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+#     results: list[declare.JudgeResult] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 def gen_path(id: str) -> str:
@@ -78,8 +100,11 @@ data = os.path.abspath("data")
 file_dir = os.path.join(data, "files")
 problem_dir = os.path.join(data, "problems")
 submission_dir = os.path.join(data, "submissions")
-problem_json = f"{problem_dir}/problems.json"
-submission_json = f"{submission_dir}/submissions.json"
+user_dir = os.path.join(data, "users")
+problem_json = os.path.join(problem_dir, "problems.json")
+submission_json = os.path.join(submission_dir, "submissions.json")
+user_json = os.path.join(user_dir, "users.json")
+roles_json = os.path.join(user_dir, "roles.json")
 
 
 def unzip_testcases(problem: Problems, upfile: UploadFile):

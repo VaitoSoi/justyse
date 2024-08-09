@@ -7,7 +7,7 @@ import redis
 from . import exception
 
 
-class RedisQueue:
+class JudgeMessages:
     client: redis.Redis
     name: str
     closed: bool = False
@@ -20,11 +20,12 @@ class RedisQueue:
         'close': [],
         'get_all': []
     }
-    # tasks: list[asyncio.Task] = []
 
-    def __init__(self, client: redis.Redis, name: str):
+    def __init__(self, client: redis.Redis, name: str, from_cache: bool = False):
         self.client = client
         self.name = name
+        if from_cache:
+            self.closed = True
 
     def __len__(self):
         return self.client.llen(self.name)
@@ -84,8 +85,8 @@ class RedisQueue:
         return items
 
     def close(self):
-        self.emit('close')
         self.closed = True
+        self.emit('close')
         self.offs()
 
     def empty(self):
@@ -94,7 +95,7 @@ class RedisQueue:
 
 class QueueManager:
     client: redis.Redis = None
-    queues: dict[str, RedisQueue] = {}
+    queues: dict[str, JudgeMessages] = {}
 
     def __init__(self, client: redis.Redis = None):
         if client is not None:
@@ -106,31 +107,41 @@ class QueueManager:
     def create(self, name: str):
         if self.check(name):
             raise exception.QueueAlreadyExist(name)
-        queue = RedisQueue(self.client, name)
+        queue = JudgeMessages(self.client, name)
         self.queues[name] = queue
         return queue
 
-    def add(self, queue: RedisQueue, skip_check: bool = False):
-        if not isinstance(queue, RedisQueue):
+    def add(self, queue: JudgeMessages, skip_check: bool = False):
+        if not isinstance(queue, JudgeMessages):
             raise exception.QueueNotValid(type(queue))
         if skip_check is False and self.check(queue.name):
             raise exception.QueueAlreadyExist(queue.name)
         self.queues[queue.name] = queue
 
-    def check(self, name: str, add: bool = False):
+    def check(self, name: str):
         if self.client is None:
             raise exception.NotConnected()
 
-        if name not in self.queues and add is True and (self.client.llen(name)) > 0:
-            self.add(RedisQueue(self.client, name), True)
-            return True
-
         return name in self.queues and not self.queues[name].closed
 
-    def get(self, name: str) -> RedisQueue:
-        if not (self.check(name)):
+    def get(self, name: str) -> JudgeMessages:
+        if not self.check(name):
             raise exception.QueueNotFound(name)
         return self.queues[name]
+
+    def check_cache(self, name: str):
+        if self.client is None:
+            raise exception.NotConnected()
+        return self.client.llen(name) > 0
+
+    def get_cache(self, name: str):
+        if self.client is None:
+            raise exception.NotConnected()
+
+        if not self.check_cache(name):
+            raise exception.QueueNotFound(name)
+
+        return JudgeMessages(self.client, name, True)
 
     def close(self, name: str):
         if self.client is None:
@@ -138,3 +149,6 @@ class QueueManager:
 
         queue = self.get(name)
         queue.close()
+
+
+

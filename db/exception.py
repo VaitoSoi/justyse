@@ -13,6 +13,12 @@ __all__ = [
     "CompilerNotAccept",
     "QueueNotFound",
     "ClosedQueue",
+    "QueueNotValid",
+    "UserAlreadyExist",
+    "UserNotFound",
+    "NotConnected",
+    "ResultNotFound",
+    "ResultAlreadyExist",
 ]
 
 
@@ -88,6 +94,14 @@ class CompilerNotAccept(NotSupport):
     pass
 
 
+class UserAlreadyExist(AlreadyExist):
+    pass
+
+
+class UserNotFound(NotFound):
+    pass
+
+
 class QueueNotFound(NotFound):
     pass
 
@@ -105,4 +119,12 @@ class QueueNotValid(ValueError):
 
 
 class NotConnected(ValueError):
+    pass
+
+
+class ResultNotFound(NotFound):
+    pass
+
+
+class ResultAlreadyExist(AlreadyExist):
     pass

@@ -10,12 +10,12 @@ logger = logging.getLogger("uvicorn.error")
 
 
 # GET
-@problem_router.get("s/", tags=["problem"])
+@problem_router.get("s/")
 def get_problems():
     return db.get_problem_ids()
 
 
-@problem_router.get("/{id}", tags=["problem"])
+@problem_router.get("/{id}")
 def get_problem(id: str, response: Response):
     try:
         return db.get_problem(id)
@@ -28,7 +28,7 @@ def get_problem(id: str, response: Response):
         return error
 
 
-@problem_router.get("/{id}/docs", tags=["problem"])
+@problem_router.get("/{id}/docs")
 def get_problem_docs(id: str, response: Response):
     try:
         docs = db.get_problem_docs(id)
@@ -46,7 +46,7 @@ def get_problem_docs(id: str, response: Response):
 
 
 # POST
-@problem_router.post("/", tags=["problem"])
+@problem_router.post("/")
 def add_problem(problem: db.Problems, response: Response):
     try:
         db.add_problem(problem)
@@ -63,7 +63,7 @@ def add_problem(problem: db.Problems, response: Response):
         return error
 
 
-@problem_router.post("/{id}/docs", tags=["problem"])
+@problem_router.post("/{id}/docs")
 def add_problem_docs(id: str, file: UploadFile, response: Response):
     try:
         db.add_problem_docs(id, file)
@@ -80,7 +80,7 @@ def add_problem_docs(id: str, file: UploadFile, response: Response):
         return error
 
 
-@problem_router.post("/{id}/testcases", tags=["problem"])
+@problem_router.post("/{id}/testcases")
 def add_problem_testcases(id: str, file: UploadFile, response: Response):
     try:
         db.add_problem_testcases(id, file)
@@ -95,7 +95,7 @@ def add_problem_testcases(id: str, file: UploadFile, response: Response):
 
 
 # PATCH
-@problem_router.patch("/{id}", tags=["problem"])
+@problem_router.patch("/{id}")
 def problem_update(id: str, problem: db.UpdateProblems, response: Response):
     try:
         db.update_problem(id, problem)
@@ -112,7 +112,7 @@ def problem_update(id: str, problem: db.UpdateProblems, response: Response):
         return error
 
 
-@problem_router.patch("/{id}/docs", tags=["problem"])
+@problem_router.patch("/{id}/docs")
 def problem_docs_update(id: str, file: UploadFile, response: Response):
     try:
         db.update_problem_docs(id, file)
@@ -129,7 +129,7 @@ def problem_docs_update(id: str, file: UploadFile, response: Response):
         return error
 
 
-@problem_router.patch("/{id}/testcases", tags=["problem"])
+@problem_router.patch("/{id}/testcases")
 def problem_testcases_update(id: str, file: UploadFile, response: Response):
     try:
         db.update_problem_testcases(id, file)
@@ -144,7 +144,7 @@ def problem_testcases_update(id: str, file: UploadFile, response: Response):
 
 
 # DELETE
-@problem_router.delete("/{id}", tags=["problem"])
+@problem_router.delete("/{id}")
 def problem_delete(id: str, response: Response):
     try:
         db.delete_problem(id)

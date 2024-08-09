@@ -5,9 +5,10 @@ import os
 import typing
 import uuid
 
+import sqlalchemy.sql.elements
 from fastapi import UploadFile
-from sqlmodel import create_engine, SQLModel, Session, select
 from sqlalchemy import Engine
+from sqlmodel import create_engine, SQLModel, Session, select
 
 import declare
 import utils
@@ -18,11 +19,14 @@ from .declare import (
     gen_path,
     unzip_testcases,
     Problems,
-    Submissions,
     DBProblems,
-    DBSubmissions,
     UpdateProblems,
-    UpdateSubmissions
+    Submissions,
+    DBSubmissions,
+    UpdateSubmissions,
+    User,
+    DBUser,
+    UpdateUser,
 )
 from .exception import (
     TestTypeNotSupport,
@@ -32,10 +36,14 @@ from .exception import (
     ProblemDocsNotFound,
     SubmissionNotFound,
     SubmissionAlreadyExist,
+    UserNotFound,
+    UserAlreadyExist,
     # NothingToUpdate,
     LanguageNotSupport,
     LanguageNotAccept,
-    CompilerNotSupport
+    CompilerNotSupport,
+    # ResultNotFound,
+    # ResultAlreadyExist
 )
 
 
@@ -52,6 +60,10 @@ class SQLProblems(DBProblems, table=True):
 
 
 class SQLSubmissions(DBSubmissions, table=True):
+    pass
+
+
+class SQLUsers(DBUser, table=True):
     pass
 
 
@@ -80,7 +92,22 @@ Problems
 def get_problem_ids() -> typing.List[str]:
     with Session(sql_engine) as session:
         statement = select(SQLProblems.id)
-        return [problem for problem in session.exec(statement).all()]
+        return session.exec(statement).all()
+
+
+def get_problem_filter(
+        selector: typing.Callable[
+            [SQLProblems],
+            sqlalchemy.sql.elements.BinaryExpression
+        ],
+        session: Session = None
+) -> list[SQLProblems] | None:
+    statement = select(SQLProblems).where(selector(SQLProblems))
+    if session is None:
+        with Session(sql_engine) as session:
+            return session.exec(statement).all()
+    else:
+        return session.exec(statement).all()
 
 
 def get_problem(id: str, session: Session = None) -> DBProblems:
@@ -209,6 +236,21 @@ def get_submission_ids() -> typing.List[str]:
         return session.exec(statement).all()
 
 
+def get_submission_filter(
+        selector: typing.Callable[
+            [SQLSubmissions],
+            sqlalchemy.sql.elements.BinaryExpression
+        ],
+        session: Session = None
+) -> list[SQLSubmissions] | None:
+    statement = select(SQLSubmissions).where(selector(SQLSubmissions))
+    if session is None:
+        with Session(sql_engine) as session:
+            return session.exec(statement).all()
+    else:
+        return session.exec(statement).all()
+
+
 def get_submission(id: str, session: Session = None) -> SQLSubmissions:
     if id not in get_submission_ids():
         raise SubmissionNotFound()
@@ -268,4 +310,108 @@ def update_submission(id: str, submission_: UpdateSubmissions):
             if val is not None:
                 setattr(submission, key, val)
 
+        session.commit()
+
+
+# OTHER :D
+# def get_results_ids() -> typing.List[str]:
+#     with Session(sql_engine) as session:
+#         statement = select(SQLJudgeResults.id)
+#         return session.exec(statement).all()
+#
+#
+# def dump_results(id: str, results: declare.JudgeResult):
+#     if id in get_results_ids():
+#         raise ResultAlreadyExist(id)
+#     result = SQLJudgeResults(
+#         id=id,
+#         results=results
+#     )
+#     with Session(sql_engine) as session:
+#         session.add(result)
+#         session.commit()
+#
+#
+# def get_results(id: str) -> declare.JudgeResult:
+#     with Session(sql_engine) as session:
+#         statement = select(SQLJudgeResults).where(SQLJudgeResults.id == id)
+#         result = session.exec(statement).first()
+#         if not result:
+#             raise ResultNotFound(id)
+#         return result.results
+
+
+"""
+User
+"""
+
+
+# GET
+def get_user_ids() -> typing.List[str]:
+    with Session(sql_engine) as session:
+        statement = select(SQLUsers.id)
+        return session.exec(statement).all()
+
+
+def get_user_filter(
+        selector: typing.Callable[
+            [SQLUsers],
+            sqlalchemy.sql.elements.BinaryExpression
+        ],
+        session: Session = None
+) -> list[SQLUsers] | None:
+    statement = select(SQLUsers).where(selector(SQLUsers))
+    if session is None:
+        with Session(sql_engine) as session:
+            return session.exec(statement).all()
+    else:
+        return session.exec(statement).all()
+
+
+def get_user(id: str, session: Session = None) -> SQLUsers:
+    if id not in get_user_ids():
+        raise UserNotFound()
+    statement = select(SQLUsers).where(SQLUsers.id == id)
+    if session is None:
+        with Session(sql_engine) as session:
+            user = session.exec(statement).first()
+    else:
+        user = session.exec(statement).first()
+    if not user:
+        raise UserNotFound()
+    return user
+
+
+# POST
+def add_user(user: User):
+    if user.id in get_user_ids():
+        raise UserAlreadyExist(user.id)
+
+    user = SQLUsers(**user.model_dump())
+    user.password = utils.hash(user.password)
+
+    with Session(sql_engine) as session:
+        session.add(user)
+        session.commit()
+
+
+# PATCH
+def update_user(id: str, user_: UpdateUser):
+    with Session(sql_engine) as session:
+        user = get_user(id, session)
+
+        for key, val in user_.model_dump().items():
+            if val is not None:
+                if key == "password":
+                    val = utils.hash(val)
+                setattr(user, key, val)
+
+        session.commit()
+
+
+# DELETE
+def delete_user(id):
+    user = get_user(id)
+    with Session(sql_engine) as session:
+        session.delete(user)
         session.commit()

@@ -17,7 +17,7 @@ judge_manger = judge.JudgeManager()
 loop: threading.Thread = threading.Thread(target=judge_manger.loop)
 heartbeat: threading.Thread = threading.Thread(target=judge_manger.heartbeat)
 redis_client: redis.Redis = None
-queue_manager: db.queue.QueueManager = None
+queue_manager: db.redis.QueueManager = None
 
 
 async def start(*args):
@@ -31,14 +31,14 @@ async def start(*args):
 
     redis_client = redis.Redis.from_url(utils.config.redis_server)
     try:
-        redis_client.ping() # noqa
+        redis_client.ping()  # noqa
     except redis.exceptions.ConnectionError as error:
         logger.error(f"Failed to connect to Redis: {utils.config.redis_server}")
         raise error from error
-    queue_manager = db.queue.QueueManager(redis_client)
+    queue_manager = db.redis.QueueManager(redis_client)
     logger.info(f"Connected to Redis: {utils.config.redis_server}")
 
-    judge_manger.connects(utils.config.judge_server)
+    judge_manger.from_json()
 
     loop.start()
     logger.info("Loop is started")
@@ -66,7 +66,7 @@ async def stop(*args):
     judge_manger.join_thread()
     logger.info("Threads are stopped")
 
-    redis_client.save() # noqa
+    redis_client.save()  # noqa
     logger.info("Saved Redis data")
 
     redis_client.close()
@@ -76,6 +76,10 @@ async def stop(*args):
 
 
 judge_router = APIRouter(prefix="/judge", tags=["judge"])
+
+"""
+Judge
+"""
 
 
 # POST
@@ -124,9 +128,11 @@ async def submission_judge_ws(id: str, ws: WebSocket):
     if not submission_id or not judge_id:
         return await ws.close(status.WS_1013_TRY_AGAIN_LATER, "invalid id")
 
-    if queue_manager.check(f"judge::{id}", True):
-        msg_queue = queue_manager.get(f"judge::{id}")
-
+    queue_id = f"judge::{submission_id}:{judge_id}"
+    if queue_manager.check(queue_id):
+        msg_queue = queue_manager.get(queue_id)
+    elif queue_manager.check_cache(queue_id):
+        msg_queue = queue_manager.get_cache(queue_id)
     else:
         return await ws.close(status.WS_1013_TRY_AGAIN_LATER, "can find judge queue")
 
@@ -172,7 +178,6 @@ async def submission_judge_ws(id: str, ws: WebSocket):
 
         elif msg[0] == 'done':
             msg_queue.close()
-
             abort_task.cancel()
             return await ws.close(status.WS_1000_NORMAL_CLOSURE, 'done')
 
@@ -187,3 +192,73 @@ async def submission_judge_ws(id: str, ws: WebSocket):
     # @msg_queue.on('close')
     # async def close_ws():
     #     await ws.close(1000, "judge closed")
+
+
+"""
+Server
+"""
+
+server_router = APIRouter(prefix="/server", tags=["server"])
+
+
+# GET
+@server_router.get("s/")
+def judge_servers():
+    return [{"id": connection._id, "name": connection.name, "status": connection.status()}
+            for _, connection in judge_manger._conenctions.items()]
+
+
+# POST
+@judge_router.post("/")
+async def server_add(server: judge.data.Server):
+    if server.id in judge_manger._conenctions:
+        return "server already exists", status.HTTP_409_CONFLICT
+
+    judge_manger.add_server(server)
+    return "added"
+
+
+@judge_router.post("/{id}/pause")
+async def server_pause(id: str):
+    if id not in judge_manger._conenctions:
+        return "server not found", status.HTTP_404_NOT_FOUND
+
+    judge_manger.pause(id)
+    return
+
+
+@judge_router.post("/{id}/resume")
+async def server_resume(id: str):
+    if id not in judge_manger._conenctions:
+        return "server not found", status.HTTP_404_NOT_FOUND
+
+    judge_manger.resume(id)
+    return
+
+
+@judge_router.post("/{id}/disconnect")
+async def server_disconnect(id: str):
+    if id not in judge_manger._conenctions:
+        return "server not found", status.HTTP_404_NOT_FOUND
+
+    judge_manger.disconnect(id)
+    return
+
+
+@judge_router.post("/{id}/reconnect")
+async def server_reconnect(id: str):
+    if id not in judge_manger._conenctions:
+        return "server not found", status.HTTP_404_NOT_FOUND
+
+    judge_manger.reconnect(id)
+    return
+
+
+# DELETE
+@judge_router.delete("/{id}")
+async def server_delete(id: str):
+    if id not in judge_manger._conenctions:
+        return "server not found", status.HTTP_404_NOT_FOUND
+
+    judge_manger.remove_server(id)
+    return

@@ -21,9 +21,11 @@ class JudgeClient:
 
     _uri: str
     _id: str
+    name: str
     _ws: ws_sync.ClientConnection = None
     _recv_timeout: int
     _is_closed: bool = False
+    _pause: bool = False
 
     _debug: typing.List[typing.Any] = []
     _status_msg: queue.Queue = queue.Queue()
@@ -35,16 +37,17 @@ class JudgeClient:
     stop_recv: threading.Event = threading.Event()
     recv_thread: threading.Thread
 
-    def __init__(self, uri: str, id: str, recv_timeout: int = 5):
-        self.uri = uri
-        self.id = id
-        self.recv_timeout = recv_timeout
-        self.is_closed = False
+    def __init__(self, uri: str, id: str, name: str, recv_timeout: int = 5):
+        self._uri = uri
+        self._id = id
+        self.name = name
+        self._recv_timeout = recv_timeout
+        self._is_closed = False
 
-        self.debug = []
-        self.status_msg = queue.Queue()
-        self.judge_msg = queue.Queue()
-        self.other_msg = queue.Queue()
+        self._debug = []
+        self._status_msg = queue.Queue()
+        self._judge_msg = queue.Queue()
+        self._other_msg = queue.Queue()
 
         self.is_judging = False
 
@@ -52,7 +55,7 @@ class JudgeClient:
         if self.is_judging is True:
             raise exception.ServerBusy()
 
-        self._ws = ws_sync.connect(self.uri)
+        self._ws = ws_sync.connect(self._uri)
 
         self._send(['declare.language', [utils.read(declare.judge.language_json), 'false']])
         self._send(['declare.compiler', [utils.read(declare.judge.compiler_json), 'false']])
@@ -64,21 +67,28 @@ class JudgeClient:
         self.recv_thread.start()
 
     def close(self):
-        self.is_closed = True
+        self._is_closed = True
 
         if self.is_judging:
             self.stop_jugde.set()
 
         self.stop_recv.set()
         if self.recv_thread.is_alive():
-            self.recv_thread.join()
+            try:
+                self.recv_thread.join()
+
+            except RuntimeError:
+                pass
 
         try:
             self._ws.close()
+
         except (websockets.exceptions.ConnectionClosed,
                 websockets.exceptions.ConnectionClosedError,
                 websockets.exceptions.ConnectionClosedOK):
             pass
+
+        self._ws = None
 
         return
 
@@ -88,14 +98,14 @@ class JudgeClient:
                 break
 
             try:
-                msg = self._ws.recv(self.recv_timeout)
+                msg = self._ws.recv(self._recv_timeout)
             except (websockets.exceptions.ConnectionClosed,
                     websockets.exceptions.ConnectionClosedError,
                     websockets.exceptions.ConnectionClosedOK):
-                self.is_closed = True
-                self.judge_msg.put(['closed'])
-                self.status_msg.put(['closed'])
-                self.other_msg.put(['closed'])
+                self._judge_msg.put(['closed'])
+                self._status_msg.put(['closed'])
+                self._other_msg.put(['closed'])
+                self.close()
                 return None
 
             except TimeoutError:
@@ -108,14 +118,14 @@ class JudgeClient:
                 pass
 
             if msg[0] == 'status':
-                self.status_msg.put(msg)
+                self._status_msg.put(msg)
 
             elif msg[0].startswith("judge."):
-                self.judge_msg.put(msg)
+                self._judge_msg.put(msg)
 
             else:
                 # print(f'recieved {msg}')
-                self.other_msg.put(msg)
+                self._other_msg.put(msg)
 
     def _send(self, data: typing.Any):
         """
@@ -138,12 +148,24 @@ class JudgeClient:
 
         return
 
-    def status(self) -> tuple[typing.Literal['idle', 'busy'], str | None, str | None]:
-        if self.is_closed:
-            return "closed"
+    def pause(self):
+        self._pause = True
+
+    def resume(self):
+        self._pause = False
+
+    def status(self) -> tuple[typing.Literal['idle', 'busy'], str | None]:
+        if self._is_closed:
+            return "closed", None
+        if self._pause:
+            return "paused", "paused"
 
         self._send(["command.status"])
-        return self.status_msg.get()[1]
+        response = self._status_msg.get()
+        if response[0] == 'closed':
+            return "closed", None
+
+        return response[1]
 
     def _init(self,
               submission: db.Submissions,
@@ -164,7 +186,7 @@ class JudgeClient:
             ).model_dump()
         ])
 
-        response = self.judge_msg.get()
+        response = self._judge_msg.get()
 
         if response[0] != 'judge.initialized':
             raise exception.InitalizationError()
@@ -179,7 +201,7 @@ class JudgeClient:
 
         self._send(['command.code', [code, code_compress]])
 
-        response = self.judge_msg.get()
+        response = self._judge_msg.get()
         if response[0] != 'judge.written:code':
             raise exception.CodeWriteError()
 
@@ -204,7 +226,7 @@ class JudgeClient:
 
             self._send(["command.testcase", [i, input_content, output_content, compress]])
 
-            response = self.judge_msg.get()
+            response = self._judge_msg.get()
             if response[0] != 'judge.written:testcase':
                 raise exception.TestcaseWriteError()
             if response[1] != i:
@@ -257,13 +279,17 @@ class JudgeClient:
         while True:
             if self.stop_jugde.is_set():
                 self._send(['abort'])
+                yield 'abort', None
                 return
 
             if abort.is_set():
                 self._send(['abort'])
                 abort.clear()
 
-            response = self.judge_msg.get()
+            response = self._judge_msg.get()
+            if response[0] == 'closed':
+                break
+
             match response[0][6:]:
                 case 'result':
                     judge_result.append(response)

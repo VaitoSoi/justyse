@@ -17,14 +17,18 @@ from .declare import (
     problem_json,
     submission_dir,
     submission_json,
+    user_json,
     gen_path,
     unzip_testcases,
     Problems,
     DBProblems,
+    UpdateProblems,
     Submissions,
     DBSubmissions,
-    UpdateProblems,
-    UpdateSubmissions
+    UpdateSubmissions,
+    User,
+    DBUser,
+    UpdateUser
 )
 from .exception import (
     TestTypeNotSupport,
@@ -34,10 +38,14 @@ from .exception import (
     ProblemDocsNotFound,
     SubmissionNotFound,
     SubmissionAlreadyExist,
+    UserAlreadyExist,
+    UserNotFound,
     # NothingToUpdate
     LanguageNotSupport,
     LanguageNotAccept,
-    CompilerNotSupport
+    CompilerNotSupport,
+    # ResultNotFound,
+    # ResultAlreadyExist
 )
 
 """
@@ -48,6 +56,11 @@ Problems
 # GET
 def get_problem_ids() -> typing.List[str]:
     return list(read_json(problem_json).keys())
+
+
+def get_problem_filter(func: typing.Callable[[DBProblems], bool]) -> list[DBProblems]:
+    problems = read_json(problem_json)
+    return [DBProblems(**v) for k, v in problems.items() if func(DBProblems(**v))]
 
 
 def get_problem(id) -> DBProblems:
@@ -173,6 +186,11 @@ def get_submission_ids() -> typing.List[str]:
     return list(read_json(submission_json).keys())
 
 
+def get_submission_filter(func: typing.Callable[[DBSubmissions], bool]) -> list[DBSubmissions]:
+    submissions = read_json(submission_json)
+    return [DBSubmissions(**v) for k, v in submissions.items() if func(DBSubmissions(**v))]
+
+
 def get_submission(id: str) -> typing.Optional[Submissions]:
     if id not in get_submission_ids():
         raise SubmissionNotFound(id)
@@ -235,3 +253,86 @@ def update_submission(id: str, submission: UpdateSubmissions):
             submissions[id][key] = val
 
     write_json(submission_json, submissions)
+
+
+# OTHER :D
+# def dump_result(id: str, results: list[declare.JudgeResult]):
+#     if id.startswith("judge::"):
+#         id = id[7:]
+#     submission_id, queue_id = id.split(":")
+#     submission = get_submission(submission_id)
+#     if path.exists(f"{submission['dir']}/result/{queue_id}.json"):
+#         raise ResultAlreadyExist(id)
+#
+#     utils.write_json(f"{submission['dir']}/result/{queue_id}.json", results)
+#
+#
+# def get_result(id: str) -> list[declare.JudgeResult]:
+#     if id.startswith("judge::"):
+#         id = id[7:]
+#     submission_id, queue_id = id.split(":")
+#     submission = get_submission(submission_id)
+#     if not path.exists(f"{submission['dir']}/result/{queue_id}.json"):
+#         raise ResultNotFound(f"{submission['dir']}/result/{queue_id}.json")
+#     return utils.read_json(f"{submission['dir']}/result/{queue_id}.json")
+
+
+"""
+User
+"""
+
+
+# GET
+def get_user_ids() -> typing.List[str]:
+    return list(read_json(user_json).keys())
+
+
+def get_user_filter(func: typing.Callable[[DBUser], bool]) -> list[DBUser]:
+    return [DBUser(**v) for k, v in read_json(user_json).items() if func(DBUser(**v))]
+
+
+def get_user(id: str) -> typing.Optional[DBUser]:
+    if id not in get_user_ids():
+        raise UserNotFound(id)
+    return DBUser(**read_json(user_json)[id])
+
+
+# POST
+def add_user(user: User):
+    if user.id in get_user_ids():
+        raise UserAlreadyExist(user.id)
+
+    user.password = utils.hash(user.password)
+    users = read_json(user_json)
+    users[user.id] = user.model_dump()
+    write_json(user_json, users)
+
+
+# PATCH
+def update_user(id: str, user: User):
+    user = user.model_dump()
+    users = read_json(user_json)
+    if id not in users:
+        raise UserNotFound(id)
+
+    if user["id"] is not None and id != user["id"]:
+        users[user["id"]] = users[id]
+        del users[id]
+
+    for key, val in user.items():
+        if val is not None and users[id][key] != val:
+            if key == 'password':
+                val = utils.hash(val)
+
+            users[id][key] = val
+
+    write_json(user_json, users)
+
+
+# DELETE
+def delete_user(id: str):
+    users = read_json(user_json)
+    if id not in users:
+        raise UserNotFound(id)
+    del users[id]
+    write_json(user_json, users)

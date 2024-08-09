@@ -9,12 +9,12 @@ logger = logging.getLogger("uvicorn.error")
 
 
 # GET
-@submission_router.get("s/", tags=["submission"])
+@submission_router.get("s/")
 def submissions():
     return db.get_submission_ids()
 
 
-@submission_router.get("/{id}", tags=["submission"])
+@submission_router.get("/{id}")
 def submission(id: str, response: Response):
     try:
         return db.get_submission(id)
@@ -29,7 +29,7 @@ def submission(id: str, response: Response):
 
 
 # POST
-@submission_router.post("/", tags=["submission"])
+@submission_router.post("/")
 def add_submission(submission: db.Submissions, response: Response):
     try:
         db.add_submission(submission)

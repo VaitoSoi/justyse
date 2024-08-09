@@ -10,8 +10,8 @@ import websockets
 import db
 import declare
 import utils
-from db.queue import RedisQueue
-from . import exception
+from db.redis import JudgeMessages
+from . import exception, data
 from .client import JudgeClient
 
 
@@ -22,28 +22,34 @@ class JudgeManager:
     _judge_queue: queue.Queue = queue.Queue()
     _judge_abort: dict[str, threading.Event] = {}
 
-    _reconnect_timeout: int = os.getenv("RECONNECT_TIMEOUT", 5)
+    _reconnect_timeout: int = os.getenv("RECONNECT_TIMEOUT", 10)
     _recv_timeout: int = os.getenv("RECV_TIMEOUT", 5)
+    _max_retry: int = os.getenv("MAX_RETRY", 5)
+    _retry: dict[str, int] = {}
 
     stop: threading.Event = threading.Event()
     threads: list[threading.Thread] = []
 
-    def __init__(self, reconnect_timeout: int = None, recv_timeout: int = None):
+    def __init__(self, reconnect_timeout: int = None, recv_timeout: int = None, max_retry: int = None):
         if reconnect_timeout is not None:
             self._reconnect_timeout = reconnect_timeout
 
         if recv_timeout is not None:
             self._recv_timeout = recv_timeout
 
-    def connect(self, uri: str, id: str):
-        if uri in [connection.uri for key, connection in self._conenctions.items() if connection is not None]:
+        if max_retry is not None:
+            self._max_retry = max_retry
+
+    def connect(self, uri: str, name: str, id: str):
+        if uri in [connection._uri for _, connection in self._conenctions.items() if connection is not None]:
             raise exception.AlreadyConnected(uri)
 
         try:
             client = JudgeClient(
-                f"{uri}/session" if not uri.endswith('/session') else uri,
-                id,
-                self._recv_timeout
+                uri=f"{uri}/session" if not uri.endswith('/session') else uri,
+                id=id,
+                name=name,
+                recv_timeout=self._recv_timeout
             )
             client.connect()
 
@@ -52,60 +58,114 @@ class JudgeManager:
 
         except (OSError,
                 websockets.exceptions.InvalidHandshake,
-                websockets.exceptions.ConnectionClosedError):
-            return None
+                websockets.exceptions.ConnectionClosedError,
+                websockets.exceptions.AbortHandshake) as error:
+            raise exception.ConnectionError() from error
 
         else:
             return client
 
-    def reconnect(self, uris: str, id: str, retry: bool = True):
-        client = self.connect(uris, id)
-        if client is not None:
+    def reconnect(self, uri: str, id: str, name: str, retry: bool = True):
+        try:
+            client = self.connect(uri, id, name)
+
+        except exception.AlreadyConnected:
+            self._retry.pop(id, None)
+            self._logger.error(f"Already connected to Judge server#{id} {uri}")
+
+        except exception.ConnectionError:
+            if not self.stop.is_set():
+                if not retry:
+                    return self._logger.error(f"Failed to reconnect to Judge server#{id}: {uri}")
+                if id in self._retry and self._retry[id] == self._max_retry:
+                    return self._logger.error(f"Retry limit reached for Judge server#{id}: {uri}")
+
+                if id not in self._retry:
+                    self._retry[id] = 0
+                self._retry[id] += 1
+
+                self._logger.info(f"Failed to reconnect to Judge server#{id}: {uri}."
+                                  f" Retry in {self._reconnect_timeout}s")
+                timer = threading.Timer(self._reconnect_timeout, self.reconnect, args=(uri, id, name, retry))
+                timer.start()
+
+        except Exception as error:
+            self._retry.pop(id, None)
+            return self._logger.error(f"Judge server raise exception while reconnecting: {str(error)}")
+
+        else:
+            self._logger.info(f"Reconnected to Judge server#{id} {uri}")
             self._conenctions[id] = client
+            self._retry.pop(id, None)
+            return client
 
-        elif retry is True and not self.stop.is_set():
-            threading.Timer(self._reconnect_timeout, self.reconnect, args=(uris, id))
+    def disconnect(self, id):
+        try:
+            self._conenctions[id].close()
+        except Exception as error:
+            self._logger.error(f"Judge server#{id} raise exception while disconnecting: {str(error)}")
+        self._conenctions[id] = None
 
-        return client
+    def disconnects(self):
+        for key, client in self._conenctions.items():
+            if client is None:
+                continue
+            self.disconnect(key)
+        self._conenctions.clear()
 
-    def connects(self, uris: list[str], warn: bool = True):
-        for index, uri in enumerate(uris):
+    def from_json(self, warn: bool = True):
+        for index, server in utils.read_json(data.server_json):
             try:
-                client = self.connect(uri, str(index))
+                client = self.connect(server.uri, server.id, server.name)
 
             except exception.AlreadyConnected:
-                self._logger.error(f"Already connected to Judge server#{index} {uri}")
+                self._logger.error(f"Already connected to Judge server#{index} {server.uri}")
+
+            except exception.ConnectionError:
+                self._logger.info(f"Failed to connect to Judge server#{index}: {server.uri}. "
+                                  f"Retry in {self._reconnect_timeout}s")
+                timer = threading.Timer(self._reconnect_timeout, self.reconnect, args=(server.uri, str(index), True))
+                timer.start()
 
             except Exception as error:
                 self._logger.error(f"Judge server raise exception while connecting: {str(error)}")
 
             else:
-                if client is not None:
-                    self._conenctions[index] = client
-                    self._logger.info(f"Connected to Judge server#{index} {uri}")
+                self._logger.info(f"Connected to Judge server#{index} {server.uri}")
+                self._conenctions[index] = client
 
-                else:
-                    self._logger.info(f"Failed to connect to Judge server#{index}: {uri}."
-                                      f" Retry in {self._reconnect_timeout}s")
-                    threading.Timer(self._reconnect_timeout, self.reconnect, args=(uri, str(index)))
-
-        if len([connection for connection in self._conenctions if connection is not None]) == 0 and warn is True:
+        if (len([connection for _, connection in self._conenctions.items() if connection is not None]) == 0
+                and warn is True):
             self._logger.warning("No judge server are connected")
 
         return self._conenctions
 
-    def disconnect(self):
-        for key, client in self._conenctions.items():
-            if client is None:
-                continue
-            try:
-                client.close()
-            except Exception as error:
-                self._logger.error(f"Judge server raise exception while disconnecting: {str(error)}")
-        self._conenctions.clear()
+    def add_server(self, server: data.Server):
+        index = server.id or len(self._conenctions)
+        client = self.connect(server.uri, server.name, index)
+        self._conenctions[index] = client
+
+        servers = utils.read_json(data.server_json)
+        servers[index] = server.model_dump()
+        utils.write_json(data.server_json, servers)
+        return client
+
+    def remove_server(self, id):
+        self._conenctions[id].close()
+        self._conenctions[id] = None
+
+        servers = utils.read_json(data.server_json)
+        servers.pop(id)
+        utils.write_json(data.server_json, servers)
 
     def status(self):
         return [client.status() for key, client in self._conenctions.items()]
+
+    def pause(self, id):
+        self._conenctions[id].pause()
+
+    def resume(self, id):
+        self._conenctions[id].resume()
 
     def idle(self):
         return all([status[0] == 'idle' for status in self.status()])
@@ -148,21 +208,16 @@ class JudgeManager:
             for index, client in self._conenctions.items():
                 if client is None:
                     continue
-                #
-                # is_closed = client.is_closed
-                # ping = client.ping()
-                # print('heartbeat', is_closed, ping)
-                #
-                # if is_closed or not ping:
-                # if client.is_closed or not client.ping():
-                if client.is_closed:
+
+                if client._is_closed:
                     self._conenctions[index] = None
                     self._logger.error(f"Judge server#{index} disconnected. Reconnecting in {self._reconnect_timeout}s")
-                    threading.Timer(self._reconnect_timeout, self.reconnect(client.uri, index, True))
+                    timer = threading.Timer(self._reconnect_timeout, self.reconnect(client._uri, index, True))
+                    timer.start()
 
             time.sleep(5)
 
-    def add_submission(self, submission_id: str, msg: RedisQueue, abort: threading.Event):
+    def add_submission(self, submission_id: str, msg: JudgeMessages, abort: threading.Event):
         self._judge_abort[submission_id] = abort
         msg.put(['waiting'])
         self._judge_queue.put((submission_id, msg))
@@ -191,27 +246,29 @@ class JudgeManager:
 
                 if not abort.is_set():
                     try:
-                        if utils.config.judge_mode == 0:
-                            thread = threading.Thread(
-                                target=self.judge_psps,
-                                kwargs={
-                                    "submission": submission,
-                                    "problem": problem,
-                                    "msg": msg,
-                                    "abort": abort
-                                },
-                                name=f"handle-{submission_id}"
-                            )
-                            thread.start()
-                            self.threads.append(thread)
-                        else:
-                            self.judge_ptps(
-                                submission=submission,
-                                problem=problem,
-                                msg=msg,
-                                abort=abort
-                            )
-                        pass
+                        match utils.config.judge_mode:
+                            case 0:
+                                thread = threading.Thread(
+                                    target=self.judge_psps,
+                                    kwargs={
+                                        "submission": submission,
+                                        "problem": problem,
+                                        "msg": msg,
+                                        "abort": abort
+                                    },
+                                    name=f"handle-{submission_id}"
+                                )
+                                thread.start()
+                                self.threads.append(thread)
+                            case 1:
+                                self.judge_ptps(
+                                    submission=submission,
+                                    problem=problem,
+                                    msg=msg,
+                                    abort=abort
+                                )
+                            case _:
+                                raise ValueError("Invalid judge mode")
                     except exception.ServerBusy:
                         self._judge_queue.put((submission_id, msg, abort))
                 else:
@@ -222,7 +279,7 @@ class JudgeManager:
     def judge_psps(self,
                    submission: db.Submissions,
                    problem: db.Problems,
-                   msg: RedisQueue,
+                   msg: JudgeMessages,
                    abort: threading.Event):
         index = [
             i for i, client in self._conenctions.items()
@@ -231,6 +288,7 @@ class JudgeManager:
         if len(index) == 0:
             raise exception.ServerBusy()
         connection = self._conenctions[index[0]]
+        msg.put(['catched', connection.name])
 
         time: float = 0
         amemory: float = 0
@@ -245,7 +303,6 @@ class JudgeManager:
                     test_range=(1, problem.total_testcases),
                     abort=abort
             ):
-                print(status, data)
                 if self.stop.is_set():
                     return
 
@@ -282,6 +339,8 @@ class JudgeManager:
                         amemory = -1
                         pmemory = -1
                     break
+                else:
+                    msg.put([status, data])
 
         except Exception as e:
             time = -1
@@ -313,9 +372,9 @@ class JudgeManager:
     def judge_ptps(self,
                    submission: db.Submissions,
                    problem: db.Problems,
-                   msg: RedisQueue,
+                   msg: JudgeMessages,
                    abort: threading.Event):
-
+        msg.put(['catched', None])
         test_chunk = utils.chunks(range(1, problem.total_testcases + 1), len(self._conenctions))
 
         self.join_thread(clean=True)
@@ -371,6 +430,9 @@ class JudgeManager:
                 pass
 
             else:
+                if len(error) > 0:
+                    continue
+
                 if message[1]['position'] != 'overall':
                     msg.put(message)
 
@@ -393,8 +455,6 @@ class JudgeManager:
                         total_time += message[1]['time']
                         amemory += message[1]['memory'][0]
                         pmemory += message[1]['memory'][1]
-
-            time.sleep(0.1)
 
         if "aborted" in overall:
             submission.result = db.declare.SubmissionResult(
