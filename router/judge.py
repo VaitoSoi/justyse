@@ -205,60 +205,60 @@ server_router = APIRouter(prefix="/server", tags=["server"])
 @server_router.get("s/")
 def judge_servers():
     return [{"id": connection._id, "name": connection.name, "status": connection.status()}
-            for _, connection in judge_manger._conenctions.items()]
+            for _, connection in judge_manger._connections.items()]
 
 
 # POST
-@judge_router.post("/")
+@server_router.post("/")
 async def server_add(server: judge.data.Server):
-    if server.id in judge_manger._conenctions:
+    if server.id in judge_manger._connections:
         return "server already exists", status.HTTP_409_CONFLICT
 
     judge_manger.add_server(server)
     return "added"
 
 
-@judge_router.post("/{id}/pause")
+@server_router.post("/{id}/pause")
 async def server_pause(id: str):
-    if id not in judge_manger._conenctions:
+    if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
 
     judge_manger.pause(id)
-    return
+    return "paused"
 
 
-@judge_router.post("/{id}/resume")
+@server_router.post("/{id}/resume")
 async def server_resume(id: str):
-    if id not in judge_manger._conenctions:
+    if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
 
     judge_manger.resume(id)
-    return
+    return "resumed"
 
 
-@judge_router.post("/{id}/disconnect")
+@server_router.post("/{id}/disconnect")
 async def server_disconnect(id: str):
-    if id not in judge_manger._conenctions:
+    if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
 
     judge_manger.disconnect(id)
-    return
+    return "disconnected"
 
 
-@judge_router.post("/{id}/reconnect")
+@server_router.post("/{id}/reconnect")
 async def server_reconnect(id: str):
-    if id not in judge_manger._conenctions:
+    if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
 
     judge_manger.reconnect(id)
-    return
+    return "reconnected"
 
 
 # DELETE
-@judge_router.delete("/{id}")
+@server_router.delete("/{id}")
 async def server_delete(id: str):
-    if id not in judge_manger._conenctions:
+    if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
 
     judge_manger.remove_server(id)
-    return
+    return "removed"

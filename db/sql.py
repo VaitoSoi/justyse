@@ -24,6 +24,7 @@ from .declare import (
     Submissions,
     DBSubmissions,
     UpdateSubmissions,
+    SubmissionResult,
     User,
     DBUser,
     UpdateUser,
@@ -263,6 +264,13 @@ def get_submission(id: str, session: Session = None) -> SQLSubmissions:
     if not submission:
         raise SubmissionNotFound()
     return submission
+
+
+def get_submission_status(id: str) -> SubmissionResult:
+    submission = get_submission(id)
+    results: list = [result for result in submission.results if result["status"] >= 0]
+    results.sort(key=lambda x: (x["status"], x["time"]))
+    return results[0] if results else {}
 
 
 # POST 

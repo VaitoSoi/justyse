@@ -40,7 +40,10 @@ api_router.include_router(judge_router)
 api_router.include_router(server_router)
 api_router.include_router(user_router)
 
-api = FastAPI(lifespan=lifespan)
+api = FastAPI(
+    lifespan=lifespan,
+    title="Judgyse Server",
+)
 api.include_router(api_router)
 
 """

@@ -6,6 +6,10 @@ class WriteError(ValueError):
     pass
 
 
+class NotFound(ValueError):
+    pass
+
+
 class CodeWriteError(WriteError):
     pass
 
@@ -43,4 +47,8 @@ class Closed(Warning):
 
 
 class ConnectionError(InitalizationError):
+    pass
+
+
+class ServerNotFound(NotFound):
     pass

@@ -26,6 +26,7 @@ from .declare import (
     Submissions,
     DBSubmissions,
     UpdateSubmissions,
+    SubmissionResult,
     User,
     DBUser,
     UpdateUser
@@ -197,6 +198,13 @@ def get_submission(id: str) -> typing.Optional[Submissions]:
     return Submissions(**read_json(submission_json)[id])
 
 
+def get_submission_status(id: str) -> SubmissionResult:
+    submission = get_submission(id)
+    results: list = [result for result in submission.results if result["status"] >= 0]
+    results.sort(key=lambda x: (x["status"], x["time"]))
+    return results[0] if results else {}
+
+
 # POST
 def add_submission(submission: Submissions):
     if submission.id in get_submission_ids():
@@ -309,7 +317,7 @@ def add_user(user: User):
 
 
 # PATCH
-def update_user(id: str, user: User):
+def update_user(id: str, user: UpdateUser):
     user = user.model_dump()
     users = read_json(user_json)
     if id not in users:

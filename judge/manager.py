@@ -17,7 +17,7 @@ from .client import JudgeClient
 
 class JudgeManager:
     _logger: logging.Logger = logging.getLogger("uvicorn.error")
-    _conenctions: typing.Dict[int, JudgeClient] = {}
+    _connections: typing.Dict[int, JudgeClient] = {}
 
     _judge_queue: queue.Queue = queue.Queue()
     _judge_abort: dict[str, threading.Event] = {}
@@ -25,6 +25,7 @@ class JudgeManager:
     _reconnect_timeout: int = os.getenv("RECONNECT_TIMEOUT", 10)
     _recv_timeout: int = os.getenv("RECV_TIMEOUT", 5)
     _max_retry: int = os.getenv("MAX_RETRY", 5)
+    _heartbeat_interval = os.getenv("HEARTBEAT_INTERVAL", 5)
     _retry: dict[str, int] = {}
 
     stop: threading.Event = threading.Event()
@@ -40,8 +41,11 @@ class JudgeManager:
         if max_retry is not None:
             self._max_retry = max_retry
 
-    def connect(self, uri: str, name: str, id: str):
-        if uri in [connection._uri for _, connection in self._conenctions.items() if connection is not None]:
+    def _get_connections(self):
+        return {key: value for key, value in self._connections.items() if value is not None}
+
+    def connect(self, uri: str, id: str, name: str):
+        if uri in [connection._uri for _, connection in self._connections.items() if connection is not None]:
             raise exception.AlreadyConnected(uri)
 
         try:
@@ -65,7 +69,14 @@ class JudgeManager:
         else:
             return client
 
-    def reconnect(self, uri: str, id: str, name: str, retry: bool = True):
+    def reconnect(self, id: str, retry: bool = True):
+        if id in self._retry and self._retry[id] == -1:
+            self._retry.pop(id, None)
+            return self._logger.info(f"Cancelled connect request to Judge server#{id}")
+
+        server = data.get_server(id)
+        uri = server.uri
+        name = server.name
         try:
             client = self.connect(uri, id, name)
 
@@ -86,93 +97,88 @@ class JudgeManager:
 
                 self._logger.info(f"Failed to reconnect to Judge server#{id}: {uri}."
                                   f" Retry in {self._reconnect_timeout}s")
-                timer = threading.Timer(self._reconnect_timeout, self.reconnect, args=(uri, id, name, retry))
+                timer = threading.Timer(self._reconnect_timeout, self.reconnect, args=(id, retry))
                 timer.start()
 
-        except Exception as error:
-            self._retry.pop(id, None)
-            return self._logger.error(f"Judge server raise exception while reconnecting: {str(error)}")
+        # except Exception as error:
+        #     self._retry.pop(id, None)
+        #     return self._logger.error(f"Judge server#{id} raise exception while reconnecting: {str(error)}")
 
         else:
             self._logger.info(f"Reconnected to Judge server#{id} {uri}")
-            self._conenctions[id] = client
+            self._connections[id] = client
             self._retry.pop(id, None)
             return client
 
     def disconnect(self, id):
+        if id not in self._connections:
+            raise exception.ServerNotFound(id)
+
         try:
-            self._conenctions[id].close()
+            self._connections[id].close()
         except Exception as error:
             self._logger.error(f"Judge server#{id} raise exception while disconnecting: {str(error)}")
-        self._conenctions[id] = None
+        self._connections.pop(id, None)
+        self._retry[id] = -1
 
     def disconnects(self):
-        for key, client in self._conenctions.items():
+        for key, client in self._connections.items():
             if client is None:
                 continue
             self.disconnect(key)
-        self._conenctions.clear()
+        self._connections.clear()
 
     def from_json(self, warn: bool = True):
-        for index, server in utils.read_json(data.server_json):
+        for server in data.get_servers().values():
             try:
-                client = self.connect(server.uri, server.id, server.name)
-
-            except exception.AlreadyConnected:
-                self._logger.error(f"Already connected to Judge server#{index} {server.uri}")
-
-            except exception.ConnectionError:
-                self._logger.info(f"Failed to connect to Judge server#{index}: {server.uri}. "
-                                  f"Retry in {self._reconnect_timeout}s")
-                timer = threading.Timer(self._reconnect_timeout, self.reconnect, args=(server.uri, str(index), True))
-                timer.start()
+                self.reconnect(server.id, True)
 
             except Exception as error:
-                self._logger.error(f"Judge server raise exception while connecting: {str(error)}")
+                self._logger.error(f"Judge server#{server.id} raise exception while connecting: {str(error)}")
 
-            else:
-                self._logger.info(f"Connected to Judge server#{index} {server.uri}")
-                self._conenctions[index] = client
-
-        if (len([connection for _, connection in self._conenctions.items() if connection is not None]) == 0
-                and warn is True):
+        if len(self._get_connections().values()) == 0 and warn is True:
             self._logger.warning("No judge server are connected")
 
-        return self._conenctions
+        return self._connections
 
     def add_server(self, server: data.Server):
-        index = server.id or len(self._conenctions)
-        client = self.connect(server.uri, server.name, index)
-        self._conenctions[index] = client
+        if server.id in self._connections:
+            raise exception.AlreadyConnected(server.id)
+
+        server.id = server.id if server.id is not None else str(len(self._connections))
 
         servers = utils.read_json(data.server_json)
-        servers[index] = server.model_dump()
+        servers[server.id] = server.model_dump()
         utils.write_json(data.server_json, servers)
+
+        client = self.reconnect(server.id, False)
+        self._connections[server.id] = client
         return client
 
     def remove_server(self, id):
-        self._conenctions[id].close()
-        self._conenctions[id] = None
+        if id not in self._connections:
+            raise exception.ServerNotFound(id)
+        self.disconnect(id)
 
         servers = utils.read_json(data.server_json)
         servers.pop(id)
         utils.write_json(data.server_json, servers)
 
     def status(self):
-        return [client.status() for key, client in self._conenctions.items()]
+        return [client.status() for key, client in self._connections.items()]
 
     def pause(self, id):
-        self._conenctions[id].pause()
+        self._connections[id].pause()
 
     def resume(self, id):
-        self._conenctions[id].resume()
+        self._connections[id].resume()
 
     def idle(self):
-        return all([status[0] == 'idle' for status in self.status()])
+        return all([status["status"] == 'idle' for status in self.status()])
 
     def is_free(self):
         return (
-            "idle" in [status[0] for status in self.status()]
+            "idle" in [status["status"] for status in self.status()]
             if utils.config.judge_mode == 0 else
             self.idle()
         )
@@ -189,7 +195,7 @@ class JudgeManager:
             self.clear_threads()
 
     def stop_recv(self):
-        conenctions = [client for key, client in self._conenctions.items() if client is not None]
+        conenctions = [client for key, client in self._connections.items() if client is not None]
 
         for client in conenctions:
             client.stop_jugde.set()
@@ -205,14 +211,15 @@ class JudgeManager:
             if self.stop.is_set():
                 break
 
-            for index, client in self._conenctions.items():
+            for client in self._connections.copy().values():
                 if client is None:
                     continue
 
                 if client._is_closed:
-                    self._conenctions[index] = None
-                    self._logger.error(f"Judge server#{index} disconnected. Reconnecting in {self._reconnect_timeout}s")
-                    timer = threading.Timer(self._reconnect_timeout, self.reconnect(client._uri, index, True))
+                    self._connections[client._id] = None
+                    self._logger.error(f"Judge server#{client._id} disconnected. "
+                                       f"Reconnecting in {self._reconnect_timeout}s")
+                    timer = threading.Timer(self._reconnect_timeout, self.reconnect(client._id, True))
                     timer.start()
 
             time.sleep(5)
@@ -277,17 +284,17 @@ class JudgeManager:
             time.sleep(1)
 
     def judge_psps(self,
-                   submission: db.Submissions,
+                   submission: db.DBSubmissions,
                    problem: db.Problems,
                    msg: JudgeMessages,
                    abort: threading.Event):
         index = [
-            i for i, client in self._conenctions.items()
+            i for i, client in self._connections.items()
             if not client.is_judging and (client.status())[0] == 'idle'
         ]
         if len(index) == 0:
             raise exception.ServerBusy()
-        connection = self._conenctions[index[0]]
+        connection = self._connections[index[0]]
         msg.put(['catched', connection.name])
 
         time: float = 0
@@ -311,16 +318,16 @@ class JudgeManager:
                         msg.put([status, data])
 
                     if data['position'] == 'compiler':
-                        if data['status'] == declare.Status.COMPILE_WARN:
+                        if data['status'] == declare.StatusCode.COMPILE_WARN.value:
                             warn = data['warn']
 
                     elif data['position'] == 'overall':
                         overall = data
 
                     elif isinstance(data['position'], int):
-                        if data['status'] == declare.Status.ABORTED.value:
+                        if data['status'] == declare.StatusCode.ABORTED.value:
                             overall = {
-                                "status": declare.Status.ABORTED.value
+                                "status": declare.StatusCode.ABORTED.value
                             }
                             time = -1
                             break
@@ -329,11 +336,14 @@ class JudgeManager:
                             amemory += data['memory'][0]
                             pmemory += data['memory'][1]
 
+                elif status == 'warn':
+                    warn = data
+
                 elif status in ['error', 'done']:
                     if status == 'error':
                         error = data['error']
                         overall = {
-                            "status": declare.Status.SYSTEM_ERROR.value
+                            "status": declare.StatusCode.SYSTEM_ERROR.value
                         }
                         time = -1
                         amemory = -1
@@ -348,12 +358,12 @@ class JudgeManager:
             pmemory = -1
             error = str(e)
             overall = {
-                "status": declare.Status.SYSTEM_ERROR.value
+                "status": declare.StatusCode.SYSTEM_ERROR.value
             }
 
         print(overall)
-        submission.result = db.declare.SubmissionResult(
-            status=overall["status"] if "status" in overall else declare.Status.SYSTEM_ERROR.value,
+        result = db.declare.SubmissionResult(
+            status=overall["status"] if "status" in overall else declare.StatusCode.SYSTEM_ERROR.value,
             warn=warn,
             error=error,
             time=time if time == -1 else (time / problem.total_testcases),
@@ -362,20 +372,21 @@ class JudgeManager:
                 pmemory / problem.total_testcases if pmemory != -1 else -1
             )
         )
+        submission.results.append(result)
         db.update_submission(submission.id, submission)
 
-        msg.put(['overall', submission.result.model_dump()])
+        msg.put(['overall', result.model_dump()])
         msg.put(['done'])
 
         return
 
     def judge_ptps(self,
-                   submission: db.Submissions,
+                   submission: db.DBSubmissions,
                    problem: db.Problems,
                    msg: JudgeMessages,
                    abort: threading.Event):
         msg.put(['catched', None])
-        test_chunk = utils.chunks(range(1, problem.total_testcases + 1), len(self._conenctions))
+        test_chunk = utils.chunks(range(1, problem.total_testcases + 1), len(self._connections))
 
         self.join_thread(clean=True)
 
@@ -384,7 +395,7 @@ class JudgeManager:
             if len(chunk) == 0:
                 continue
 
-            connection = self._conenctions[i]
+            connection = list(self._connections.values())[i]
             thread = threading.Thread(
                 target=connection.judge,
                 kwargs={
@@ -393,7 +404,8 @@ class JudgeManager:
                     "test_range": (chunk[0], chunk[-1]),
                     "msg_queue": judge_msg,
                     "abort": abort
-                }
+                },
+                name=f"handle-{submission.id}-{i}"
             )
             thread.start()
             self.threads.append(thread)
@@ -402,8 +414,8 @@ class JudgeManager:
             return all([thread.is_alive() for thread in self.threads])
 
         statuss = {}
-        warn: set[str] = {}
-        error: set[str] = {}
+        warn: set[str] = set()
+        error: set[str] = set()
         total_time: float = 0
         amemory: float = 0
         pmemory: float = 0
@@ -426,6 +438,9 @@ class JudgeManager:
                 amemory = -1
                 pmemory = -1
 
+            elif message[0] == 'warn':
+                warn.add(message[1])
+
             elif message[0] in ['debug', 'done']:
                 pass
 
@@ -439,15 +454,11 @@ class JudgeManager:
                 if message[0] != 'result':
                     continue
 
-                if message[1]['position'] == 'compiler':
-                    if message[1]['status'] == declare.Status.COMPILE_WARN:
-                        warn.add(message[1]['message'])
-
                 elif message[1]['position'] == 'overall':
                     overall.append(message[1])
 
                 elif isinstance(message[1]['position'], int):
-                    if message[1]['status'] == declare.Status.ABORTED.value:
+                    if message[1]['status'] == declare.StatusCode.ABORTED.value:
                         overall.append("aborted")
                         total_time = -1
 
@@ -456,9 +467,10 @@ class JudgeManager:
                         amemory += message[1]['memory'][0]
                         pmemory += message[1]['memory'][1]
 
+        result: db.declare.SubmissionResult = None
         if "aborted" in overall:
-            submission.result = db.declare.SubmissionResult(
-                status=declare.Status.ABORTED.value,
+            result = db.declare.SubmissionResult(
+                status=declare.StatusCode.ABORTED.value,
                 time=-1,
                 warn="",
                 error="",
@@ -466,18 +478,19 @@ class JudgeManager:
 
         else:
             overall.sort(key=lambda result: result['status'])
-            submission.result = db.declare.SubmissionResult(
-                status=overall[0]['status'] if len(error) == 0 else declare.Status.SYSTEM_ERROR.value,
-                time=total_time if total_time == -1 else (total_time / problem.total_testcases),
-                warn="\n".join(warn),
-                error="\n".join(error),
-                memory=(
-                    amemory / problem.total_testcases if amemory != -1 else -1,
-                    pmemory / problem.total_testcases if pmemory != -1 else -1
+            result = db.declare.SubmissionResult(
+                    status=overall[0]['status'] if len(error) == 0 else declare.StatusCode.SYSTEM_ERROR.value,
+                    time=total_time if total_time == -1 else (total_time / problem.total_testcases),
+                    warn="\n".join(list(warn)),
+                    error="\n".join(list(error)),
+                    memory=(
+                        amemory / problem.total_testcases if amemory != -1 else -1,
+                        pmemory / problem.total_testcases if pmemory != -1 else -1
+                    )
                 )
-            )
 
-        msg.put(['overall', submission.result.model_dump()])
+        submission.results.append(result)
+        msg.put(['overall', result.model_dump()])
         msg.put(['done'])
 
         db.update_submission(submission.id, submission)

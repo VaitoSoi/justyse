@@ -85,7 +85,7 @@ Problems
 get_problem_ids: typing.Callable[[], typing.List[str]] = get("get_problem_ids")
 get_problem_filter: typing.Callable[[typing.Callable[[DBProblems], typing.Any]], list[DBProblems]] = \
     get("get_problem_filter")
-get_problem: typing.Callable[[str], typing.Optional[Problems]] = get("get_problem")
+get_problem: typing.Callable[[str], DBProblems] = get("get_problem")
 get_problem_docs: typing.Callable[[str], typing.Optional[str]] = get("get_problem_docs")
 add_problem: typing.Callable[[Problems], None] = get("add_problem")
 add_problem_docs: typing.Callable[[str, UploadFile], None] = get("add_problem_docs")
@@ -101,7 +101,8 @@ Submission
 get_submission_ids: typing.Callable[[], typing.List[str]] = get("get_submission_ids")
 get_submission_filter: typing.Callable[[typing.Callable[[DBSubmissions], typing.Any]], list[DBSubmissions]] = \
     get("get_submission_filter")
-get_submission: typing.Callable[[str], typing.Optional[Submissions]] = get("get_submission")
+get_submission: typing.Callable[[str], DBSubmissions] = get("get_submission")
+get_submission_status: typing.Callable[[str], declare.SubmissionResult] = get("get_submission_status")
 add_submission: typing.Callable[[Submissions], None] = get("add_submission")
 update_submission: typing.Callable[[str, UpdateSubmissions], None] = get("update_submission")
 # dump_result: typing.Callable[[str, list[declare_.JudgeResult]], None] = get("dump_result")
@@ -112,7 +113,7 @@ User
 """
 get_user_ids: typing.Callable[[], typing.List[str]] = get("get_user_ids")
 get_user_filter: typing.Callable[[typing.Callable[[DBUser], typing.Any]], list[DBUser]] = get("get_user_filter")
-get_user: typing.Callable[[str], typing.Optional[User]] = get("get_user")
+get_user: typing.Callable[[str], DBUser] = get("get_user")
 add_user: typing.Callable[[User], None] = get("add_user")
 update_user: typing.Callable[[str, UpdateUser], None] = get("update_user")
 delete_user: typing.Callable[[str], None] = get("delete_user")

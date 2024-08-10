@@ -61,7 +61,7 @@ class DBSubmissions(Submissions):
     dir: str = sqlmodel.Field(default=None)
     file_path: str = sqlmodel.Field(default=None)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
-    result: typing.Optional[SubmissionResult] = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
+    results: list[SubmissionResult] = sqlmodel.Field(default=[], sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 @utils.partial_model

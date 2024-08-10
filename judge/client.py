@@ -35,7 +35,7 @@ class JudgeClient:
     is_judging: bool = False
     stop_jugde: threading.Event = threading.Event()
     stop_recv: threading.Event = threading.Event()
-    recv_thread: threading.Thread
+    recv_thread: threading.Thread = None
 
     def __init__(self, uri: str, id: str, name: str, recv_timeout: int = 5):
         self._uri = uri
@@ -73,7 +73,7 @@ class JudgeClient:
             self.stop_jugde.set()
 
         self.stop_recv.set()
-        if self.recv_thread.is_alive():
+        if self.recv_thread is not None and self.recv_thread.is_alive():
             try:
                 self.recv_thread.join()
 
@@ -111,6 +111,9 @@ class JudgeClient:
             except TimeoutError:
                 continue
 
+            except Exception as e:
+                return self._logger.error(f"Recive error while recieving data from Judge server#{self._id}: {e}")
+
             try:
                 msg = json.loads(msg)
 
@@ -146,6 +149,9 @@ class JudgeClient:
                 websockets.exceptions.ConnectionClosedOK):
             self.close()
 
+        except Exception as e:
+            self._logger.error(f"Recive error while sending data to Judge server#{self._id}: {e}")
+
         return
 
     def pause(self):
@@ -154,18 +160,18 @@ class JudgeClient:
     def resume(self):
         self._pause = False
 
-    def status(self) -> tuple[typing.Literal['idle', 'busy'], str | None]:
+    def status(self) -> declare.Status:
         if self._is_closed:
             return "closed", None
         if self._pause:
-            return "paused", "paused"
+            return "paused", None
 
         self._send(["command.status"])
         response = self._status_msg.get()
         if response[0] == 'closed':
             return "closed", None
 
-        return response[1]
+        return declare.Status(**response[1])
 
     def _init(self,
               submission: db.Submissions,
@@ -191,11 +197,11 @@ class JudgeClient:
         if response[0] != 'judge.initialized':
             raise exception.InitalizationError()
 
-        return self.debug.append("initalized")
+        return self._debug.append("initalized")
 
     def _code(self, path: str):
         code = utils.read(path)
-        code_compress = len(code) > utils.config.compress_threshold
+        code_compress = 10 < utils.config.compress_threshold <= len(code)
         if code_compress:
             code = zlib.compress(code)
 
@@ -205,7 +211,7 @@ class JudgeClient:
         if response[0] != 'judge.written:code':
             raise exception.CodeWriteError()
 
-        return self.debug.append("written:code")
+        return self._debug.append("written:code")
 
     def _testcases(self, problem: db.Problems, test_range: typing.Tuple[int, int]):
         test_dir = os.path.join(problem.dir, "testcases")
@@ -219,7 +225,7 @@ class JudgeClient:
                 self._logger.warning(f"input file or output file of test {i} is empty")
 
             total_size = os.path.getsize(input_file) + os.path.getsize(output_file)
-            compress = total_size >= utils.config.compress_threshold
+            compress = 10 < utils.config.compress_threshold <= total_size
             if compress:
                 input_content = zlib.compress(input_content)
                 output_content = zlib.compress(output_content)
@@ -232,7 +238,7 @@ class JudgeClient:
             if response[1] != i:
                 raise exception.TestcaseMismatchError()
 
-            self.debug.append(f"written:testcase {i}")
+            self._debug.append(f"written:testcase {i}")
 
     def judge(self,
               submission: db.Submissions,
@@ -246,6 +252,7 @@ class JudgeClient:
             for result, data in self.judge_iter(submission, problem, test_range, abort, skip_debug):
                 msg_queue.put([result, data])
         except Exception as e:
+            raise e
             msg_queue.put(['error', e])
 
     def judge_iter(self,
@@ -255,7 +262,7 @@ class JudgeClient:
                    abort: threading.Event,
                    skip_debug: bool = True) -> typing.Iterator[tuple[str, typing.Any]]:
 
-        status = (self.status())[0]
+        status = (self.status())["status"]
         if status == "busy":
             exception.ServerBusy()
 
@@ -265,7 +272,7 @@ class JudgeClient:
         judge_result = []
         self.stop_jugde.clear()
         self.is_judging = True
-        self.debug = []
+        self._debug = []
 
         yield 'initting', None
         self._send(['command.start', None])
@@ -299,7 +306,7 @@ class JudgeClient:
                     break
 
                 case _:
-                    self.debug.append(response)
+                    self._debug.append(response)
                     if skip_debug is False:
                         yield 'debug', response
 

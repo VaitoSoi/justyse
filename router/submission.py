@@ -21,10 +21,26 @@ def submission(id: str, response: Response):
 
     except db.exception.SubmissionNotFound:
         response.status_code = status.HTTP_404_NOT_FOUND
-        return "problem not found"
+        return "submission not found"
+
     except Exception as error:
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        logger.error(f'get problem {id} raise {error}')
+        logger.error(f'get submission {id} raise {error}')
+        return error
+
+
+@submission_router.get("/{id}/status")
+def submission_status(id: str, response: Response):
+    try:
+        return db.get_submission_status(id)
+
+    except db.exception.SubmissionNotFound:
+        response.status_code = status.HTTP_404_NOT_FOUND
+        return "submission not found"
+
+    except Exception as error:
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        logger.error(f'get submission {id} raise {error}')
         return error
 
 
@@ -34,22 +50,28 @@ def add_submission(submission: db.Submissions, response: Response):
     try:
         db.add_submission(submission)
         return "Added!"
+
     except db.exception.ProblemNotFound:
         response.status_code = status.HTTP_404_NOT_FOUND
         return "problem not found"
+
     except db.exception.SubmissionAlreadyExist:
         response.status_code = status.HTTP_409_CONFLICT
         return "submission already exists"
+
     except db.exception.LanguageNotSupport as error:
         response.status_code = status.HTTP_501_NOT_IMPLEMENTED
         return f"language {error.args[0][0]}:{error.args[0][1]} not support"
+
     except db.exception.LanguageNotAccept as error:
         response.status_code = status.HTTP_406_NOT_ACCEPTABLE
         return f"language {error.args[0][0]}:{error.args[0][1]} not accept"
+
     except db.exception.CompilerNotSupport as error:
         response.status_code = status.HTTP_501_NOT_IMPLEMENTED
         return f"compiler {error.args[0][0]}:{error.args[0][1]} not support"
+
     except Exception as error:
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        logger.error(f'create problem {submission.id} raise {error}')
+        logger.error(f'create submission {submission.id} raise {error}')
         return error
