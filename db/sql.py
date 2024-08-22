@@ -1,8 +1,10 @@
 """
 For mixing-stored type
 """
+import ast
 import os
 import typing
+import copy
 import uuid
 
 import sqlalchemy.sql.elements
@@ -14,8 +16,8 @@ import declare
 import utils
 from declare import Language
 from .declare import (
-    file_dir,
-    submission_dir,
+    files_dir,
+    submissions_dir,
     gen_path,
     unzip_testcases,
     Problems,
@@ -24,10 +26,12 @@ from .declare import (
     Submissions,
     DBSubmissions,
     UpdateSubmissions,
-    SubmissionResult,
     User,
     DBUser,
     UpdateUser,
+    Role,
+    DBRole,
+    UpdateRole
 )
 from .exception import (
     TestTypeNotSupport,
@@ -35,6 +39,7 @@ from .exception import (
     ProblemAlreadyExisted,
     ProblemDocsAlreadyExist,
     ProblemDocsNotFound,
+    InvalidProblemJudger,
     SubmissionNotFound,
     SubmissionAlreadyExist,
     UserNotFound,
@@ -43,8 +48,9 @@ from .exception import (
     LanguageNotSupport,
     LanguageNotAccept,
     CompilerNotSupport,
-    # ResultNotFound,
-    # ResultAlreadyExist
+    RoleNotFound,
+    RoleAlreadyExist,
+    PermissionDenied
 )
 
 
@@ -68,10 +74,14 @@ class SQLUsers(DBUser, table=True):
     pass
 
 
+class SQLRoles(DBRole, table=True):
+    pass
+
+
 sql_engine: Engine = None
 
 
-def create_all():
+def setup():
     global sql_engine
     sql_engine = create_engine(
         f"sqlite:///{os.getcwd()}/data/justyse.db"
@@ -90,10 +100,15 @@ Problems
 
 
 # GET
-def get_problem_ids() -> typing.List[str]:
+def get_problems(keys: list[str] = None) -> typing.List[dict]:
+    keys = keys or ["id"]
     with Session(sql_engine) as session:
-        statement = select(SQLProblems.id)
-        return session.exec(statement).all()
+        statement = select(SQLProblems)
+        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+
+
+def get_problem_ids() -> typing.List[str]:
+    return [item["id"] for item in get_problems()]
 
 
 def get_problem_filter(
@@ -148,6 +163,15 @@ def add_problem(problem: Problems):
         # raise ProblemAlreadyExisted(problem.id)
         pass
 
+    if problem.judger is not None:
+        try:
+            ast.parse(problem.judger)
+        except SyntaxError:
+            raise InvalidProblemJudger()
+        with open(os.path.join(problem.dir, "judger.py"), "w") as f:
+            f.write(problem.judger)
+        problem.judger = None
+
     if problem.test_type not in ["file", "std"]:
         raise TestTypeNotSupport()
 
@@ -156,9 +180,13 @@ def add_problem(problem: Problems):
         if lang not in support_language:
             raise LanguageNotSupport(lang)
 
+    res = copy.copy(problem)
+
     with Session(sql_engine) as session:
         session.add(problem)
         session.commit()
+
+    return res
 
 
 def add_problem_docs(id: str, file: UploadFile):
@@ -168,7 +196,7 @@ def add_problem_docs(id: str, file: UploadFile):
         raise ProblemDocsAlreadyExist(id)
 
     file.filename = f"{uuid.uuid4().__str__()}.pdf"
-    with open(f"{file_dir}/{file.filename}", "wb") as f:
+    with open(f"{files_dir}/{file.filename}", "wb") as f:
         f.write(file.file.read())
 
     file.file.close()
@@ -178,9 +206,6 @@ def add_problem_docs(id: str, file: UploadFile):
 
 def add_problem_testcases(id: str, upfile: UploadFile):
     problem = get_problem(id)
-
-    if not problem:
-        raise ProblemNotFound(id)
 
     unzip_testcases(problem, upfile)
 
@@ -197,7 +222,11 @@ def update_problem(id, problem_: typing.Union[DBProblems, UpdateProblems]):
             if val is not None:
                 setattr(problem, key, val)
 
+        res = copy.copy(problem)
+
         session.commit()
+
+        return res
 
 
 def update_problem_docs(id: str, file: UploadFile):
@@ -205,20 +234,35 @@ def update_problem_docs(id: str, file: UploadFile):
     if not problem.description.startswith("docs:"):
         raise ProblemDocsNotFound(id)
 
-    with open(os.path.join(file_dir, problem.description[5:]), "wb") as f:
+    with open(os.path.join(files_dir, problem.description[5:]), "wb") as f:
         f.write(file.file.read())
     file.file.close()
 
 
-def update_problem_testcases(id: str, file: UploadFile):
-    add_problem_testcases(id, file)
+def update_problem_testcases(id: str, upfile: UploadFile):
+    problem = get_problem(id)
+
+    unzip_testcases(problem, upfile, True)
+
+
+# def update_problem_judger(id: str, code: str):
+#     problem = get_problem(id)
+#
+#     try:
+#         ast.parse(code)
+#     except SyntaxError:
+#         raise InvalidProblemJudger()
+#
+#     with open(os.path.join(problem.dir, "judger.py"), "w") as f:
+#         f.write(code)
 
 
 # DELETE
+
 def delete_problem(id):
     problem = get_problem(id)
     if problem.description.startswith("docs:"):
-        os.remove(os.path.join(file_dir, problem.description[5:]))
+        os.remove(os.path.join(files_dir, problem.description[5:]))
 
     with Session(sql_engine) as session:
         session.delete(problem)
@@ -266,20 +310,23 @@ def get_submission(id: str, session: Session = None) -> SQLSubmissions:
     return submission
 
 
-def get_submission_status(id: str) -> SubmissionResult:
-    submission = get_submission(id)
-    results: list = [result for result in submission.results if result["status"] >= 0]
-    results.sort(key=lambda x: (x["status"], x["time"]))
-    return results[0] if results else {}
+# def get_submission_status(id: str) -> SubmissionResult:
+#     submission = get_submission(id)
+#     # results: list = [result for result in submission.results if result["status"] >= 0]
+#     # results.sort(key=lambda x: (x["status"], x["time"]))
+#     return submission.result
 
 
 # POST 
-def add_submission(submission: Submissions):
+def add_submission(submission: Submissions, submitter: DBUser):
     if submission.id in get_submission_ids():
         raise SubmissionAlreadyExist(submission.id)
 
+    get_user(submission.by)
+
     submission = SQLSubmissions(**submission.model_dump())
-    submission.dir = os.path.join(submission_dir, submission.id)
+    submission.by = submitter.id
+    submission.dir = os.path.join(submissions_dir, submission.id)
     submission.file_path = os.path.join(submission['dir'],
                                         Language[submission.lang[0]].file.format(id=submission.id))
 
@@ -304,9 +351,13 @@ def add_submission(submission: Submissions):
         file.write(submission['code'])
     submission.code = ""
 
+    res = copy.copy(submission)
+
     with Session(sql_engine) as session:
         session.add(submission)
         session.commit()
+
+    return res
 
 
 # PATCH
@@ -391,16 +442,32 @@ def get_user(id: str, session: Session = None) -> SQLUsers:
 
 
 # POST
-def add_user(user: User):
+def add_user(user: User, creator: DBUser | str | None = None):
     if user.id in get_user_ids():
         raise UserAlreadyExist(user.id)
 
+    if isinstance(creator, str) and creator == "@system@":
+        pass
+
+    elif not user.roles or not creator:
+        user.roles = ["@default"]
+
+    else:
+        roles = [get_role(role) for role in user.roles]
+        for role in roles:
+            for permission in role.permissions:
+                if not has_permission(creator, permission):
+                    raise PermissionDenied(permission)
+
     user = SQLUsers(**user.model_dump())
     user.password = utils.hash(user.password)
+    res = copy.copy(user)
 
     with Session(sql_engine) as session:
         session.add(user)
         session.commit()
+
+    return res
 
 
 # PATCH
@@ -414,7 +481,11 @@ def update_user(id: str, user_: UpdateUser):
                     val = utils.hash(val)
                 setattr(user, key, val)
 
+        res = copy.copy(user)
+
         session.commit()
+
+        return res
 
 
 # DELETE
@@ -423,3 +494,92 @@ def delete_user(id):
     with Session(sql_engine) as session:
         session.delete(user)
         session.commit()
+
+
+"""
+Role
+"""
+
+
+# GET
+def get_role_ids() -> typing.List[str]:
+    with Session(sql_engine) as session:
+        statement = select(SQLRoles.id)
+        return session.exec(statement).all()
+
+
+def get_role_filter(
+        selector: typing.Callable[
+            [SQLRoles],
+            sqlalchemy.sql.elements.BinaryExpression
+        ],
+        session: Session = None
+) -> list[SQLRoles] | None:
+    statement = select(SQLRoles).where(selector(SQLRoles))
+    if session is None:
+        with Session(sql_engine) as session:
+            return session.exec(statement).all()
+    else:
+        return session.exec(statement).all()
+
+
+def get_role(id: str, session: Session = None) -> SQLRoles:
+    if id not in get_role_ids():
+        raise RoleNotFound(id)
+    statement = select(SQLRoles).where(SQLRoles.id == id)
+    if session is None:
+        with Session(sql_engine) as session:
+            role = session.exec(statement).first()
+    else:
+        role = session.exec(statement).first()
+    if not role:
+        raise RoleNotFound()
+    return role
+
+
+# POST
+def add_role(role: Role):
+    if role.id in get_role_ids():
+        raise RoleAlreadyExist(role.id)
+
+    role = SQLRoles(**role.model_dump())
+    res = copy.copy(role)
+
+    with Session(sql_engine) as session:
+        session.add(role)
+        session.commit()
+
+    return res
+
+
+# PATCH
+def update_role(id: str, role_: UpdateRole):
+    with Session(sql_engine) as session:
+        role = get_role(id, session)
+
+        for key, val in role_.model_dump().items():
+            if val is not None:
+                setattr(role, key, val)
+
+        session.commit()
+
+        return role
+
+
+# DELETE
+def delete_role(id):
+    role = get_role(id)
+    with Session(sql_engine) as session:
+        session.delete(role)
+        session.commit()
+
+
+# OTHER
+def uid_has_permission(uid: str, permission: str) -> bool:
+    return has_permission(get_user(uid), permission)
+
+
+def has_permission(user: DBUser, permission: str) -> bool:
+    return "@admin" in user.roles or len([role
+                                          for role in get_role_filter(lambda role: role.id.in_(user.roles))
+                                          if permission in role.permissions]) > 0

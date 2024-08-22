@@ -18,6 +18,10 @@ class TestcaseWriteError(WriteError):
     pass
 
 
+class JudgerWriteError(WriteError):
+    pass
+
+
 class MismatchError(ValueError):
     pass
 

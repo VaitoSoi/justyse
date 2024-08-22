@@ -8,11 +8,11 @@ import zipfile
 import sqlmodel
 from fastapi import UploadFile
 
-# import declare
 import utils
 from declare import Limit, JudgeMode, Indexable
 from utils import config
-from .exception import ProblemNotFound, InvalidTestcaseExtension, InvalidTestcaseCount
+from .exception import ProblemNotFound, InvalidTestcaseExtension, InvalidTestcaseCount, ProblemTestcaseAlreadyExist
+from .logging import logger
 
 
 class Problems(Indexable):
@@ -20,17 +20,25 @@ class Problems(Indexable):
     id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     title: str
     description: str = sqlmodel.Field(default="")
-    accept_language: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
-    test_name: typing.Tuple[str, str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+
     total_testcases: int
     test_type: str
-    roles: typing.Optional[typing.List[str]] | str = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+    test_name: typing.Tuple[str, str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+
+    accept_language: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     limit: Limit = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     mode: JudgeMode = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+    point_per_testcase: float = sqlmodel.Field(default=1.0)
+    judger: str | None = sqlmodel.Field(default=None)
+
+    roles: typing.List[str] = sqlmodel.Field(
+        sa_column=sqlmodel.Column(sqlmodel.JSON),
+        default=["@everyone"]
+    )
 
 
 class DBProblems(Problems):
-    dir: str = sqlmodel.Field(default=None)
+    dir: str
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
 
 
@@ -44,6 +52,7 @@ class SubmissionResult(Indexable):
     warn: str | None
     error: str | None
     time: float | None
+    point: float | None
     memory: tuple[float, float] | None
 
 
@@ -51,17 +60,17 @@ class Submissions(Indexable):
     __tablename__ = "submissions"
     id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     problem: str = sqlmodel.Field(foreign_key="problems.id")
-    by: str = sqlmodel.Field(foreign_key="users.id")
     lang: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     compiler: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     code: typing.Optional[str] = sqlmodel.Field(default=None)
 
 
 class DBSubmissions(Submissions):
+    by: str = sqlmodel.Field(foreign_key="users.id")
     dir: str = sqlmodel.Field(default=None)
     file_path: str = sqlmodel.Field(default=None)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
-    results: list[SubmissionResult] = sqlmodel.Field(default=[], sa_column=sqlmodel.Column(sqlmodel.JSON))
+    result: SubmissionResult = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 @utils.partial_model
@@ -73,12 +82,13 @@ class User(Indexable):
     __tablename__ = "users"
     id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str
-    password: str
+    password: str = sqlmodel.Field(min_length=6, max_length=64)
     roles: typing.List[str] | None = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 class DBUser(User):
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+    password: str = sqlmodel.Field(min_length=None, max_length=None)
 
 
 @utils.partial_model
@@ -86,40 +96,77 @@ class UpdateUser(User):
     pass
 
 
-# class JudgeResults(Indexable):
-#     id: str
-#     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
-#     results: list[declare.JudgeResult] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+class Role(Indexable):
+    __tablename__ = "roles"
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    name: str
+    permissions: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+
+
+class DBRole(Role):
+    created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+
+
+@utils.partial_model
+class UpdateRole(Role):
+    pass
+
+
+DefaultPermissions = [
+    "problem:view",
+    "problem:views",
+    "submission:view",
+    "submission:views",
+    "submission:judge",
+    "contest:view",
+    "contest:views",
+    "contest:join",
+    "judge_server:view",
+    "user:view",
+    "user:views",
+    "user:edit",
+    "user:delete"
+    "role:view",
+]
+DefaultUser = DBUser(
+    id="default",
+    name="default",
+    password="default",
+    roles=["@default"]
+)
 
 
 def gen_path(id: str) -> str:
-    return os.path.join(problem_dir, id)
+    return os.path.join(problems_dir, id)
 
 
 data = os.path.abspath("data")
-file_dir = os.path.join(data, "files")
-problem_dir = os.path.join(data, "problems")
-submission_dir = os.path.join(data, "submissions")
-user_dir = os.path.join(data, "users")
-problem_json = os.path.join(problem_dir, "problems.json")
-submission_json = os.path.join(submission_dir, "submissions.json")
-user_json = os.path.join(user_dir, "users.json")
-roles_json = os.path.join(user_dir, "roles.json")
+files_dir = os.path.join(data, "files")
+problems_dir = os.path.join(data, "problems")
+submissions_dir = os.path.join(data, "submissions")
+users_dir = os.path.join(data, "users")
+problems_json = os.path.join(problems_dir, "problems.json")
+submissions_json = os.path.join(submissions_dir, "submissions.json")
+users_json = os.path.join(users_dir, "users.json")
+roles_json = os.path.join(users_dir, "roles.json")
 
 
-def unzip_testcases(problem: Problems, upfile: UploadFile):
+def unzip_testcases(problem: DBProblems, upfile: UploadFile, overwrite: bool = False):
     if not problem:
         raise ProblemNotFound()
 
     if os.path.exists(os.path.join(problem.dir, "testcases")):
-        shutil.rmtree(os.path.join(problem.dir, "testcases"))
+        if overwrite:
+            shutil.rmtree(os.path.join(problem.dir, "testcases"))
+        else:
+            raise ProblemTestcaseAlreadyExist()
 
     zip_file = upfile.filename
     with open(f"{problem['dir']}/{zip_file}", "wb") as f:
         f.write(upfile.file.read())
     upfile.file.close()
 
-    unzip_dir = os.path.join(problem["dir"], "testcase")
+    unzip_dir = os.path.join(problem["dir"], "unzipped")
     with zipfile.ZipFile(os.path.join(problem["dir"], zip_file), "r") as zip_ref:
         zip_ref.extractall(unzip_dir)
 
@@ -127,19 +174,25 @@ def unzip_testcases(problem: Problems, upfile: UploadFile):
     out_ext = problem["test_name"][1].split(".")[-1]
     inps = []
     outs = []
-    for root, dirs, files in os.walk(os.path.join(problem["dir"], "testcase")):
+    for root, dirs, files in os.walk(unzip_dir):
         for file in files:
             if file.endswith(f"{inp_ext}"):
                 inps.append(file)
             elif file.endswith(f"{out_ext}"):
                 outs.append(file)
             else:
-                if config["testcase_strict"] == "strict":
+                if config.testcase_strict == "strict":
                     raise InvalidTestcaseExtension(file)
+                elif config.testcase_strict == "delete":
+                    os.remove(os.path.join(root, file))
+                elif config.testcase_strict == "warn":
+                    logger.warning(f'Problem "{problem.id}", invalid testcase extension: {file}')
+                elif config.testcase_strict == "ignore":
+                    pass
     inps.sort()
     outs.sort()
     if problem["total_testcases"] != len(inps) or problem["total_testcases"] != len(outs):
-        raise InvalidTestcaseCount(f"expect: {problem.total_testcases}, got {len(inps)} inps and {len(outs)} outs")
+        raise InvalidTestcaseCount(problem.total_testcases, (len(inps), len(outs)))
 
     for i in range(len(inps)):
         testcase_dir = os.path.abspath(os.path.join(problem["dir"], "testcases", str(i + 1)))

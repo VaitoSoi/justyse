@@ -6,6 +6,7 @@ import os
 import os.path as path
 import typing
 import uuid
+import ast
 
 from fastapi import UploadFile
 
@@ -13,11 +14,12 @@ import declare
 import utils
 from utils import read_json, write_json
 from .declare import (
-    file_dir,
-    problem_json,
-    submission_dir,
-    submission_json,
-    user_json,
+    files_dir,
+    problems_json,
+    submissions_dir,
+    submissions_json,
+    users_json,
+    roles_json,
     gen_path,
     unzip_testcases,
     Problems,
@@ -26,10 +28,12 @@ from .declare import (
     Submissions,
     DBSubmissions,
     UpdateSubmissions,
-    SubmissionResult,
     User,
     DBUser,
-    UpdateUser
+    UpdateUser,
+    Role,
+    DBRole,
+    UpdateRole
 )
 from .exception import (
     TestTypeNotSupport,
@@ -37,6 +41,7 @@ from .exception import (
     ProblemAlreadyExisted,
     ProblemDocsAlreadyExist,
     ProblemDocsNotFound,
+    InvalidProblemJudger,
     SubmissionNotFound,
     SubmissionAlreadyExist,
     UserAlreadyExist,
@@ -45,9 +50,16 @@ from .exception import (
     LanguageNotSupport,
     LanguageNotAccept,
     CompilerNotSupport,
-    # ResultNotFound,
-    # ResultAlreadyExist
+    RoleNotFound,
+    RoleAlreadyExist,
+    PermissionDenied,
+    PermissionNotFound
 )
+
+
+def setup():
+    pass
+
 
 """
 Problems
@@ -55,25 +67,28 @@ Problems
 
 
 # GET
+def get_problems(keys: list[str] = None) -> list[dict]:
+    keys = keys or ["id"]
+    return [{key: problem[key] for key in keys} for problem in read_json(problems_json).values()]
+
+
 def get_problem_ids() -> typing.List[str]:
-    return list(read_json(problem_json).keys())
+    return list(read_json(problems_json).keys())
 
 
 def get_problem_filter(func: typing.Callable[[DBProblems], bool]) -> list[DBProblems]:
-    problems = read_json(problem_json)
+    problems = read_json(problems_json)
     return [DBProblems(**v) for k, v in problems.items() if func(DBProblems(**v))]
 
 
 def get_problem(id) -> DBProblems:
     if id not in get_problem_ids():
         raise ProblemNotFound()
-    return Problems(**read_json(problem_json)[id])
+    return Problems(**read_json(problems_json)[id])
 
 
 def get_problem_docs(id: str) -> str:
     problem = get_problem(id)
-    if not problem:
-        raise ProblemNotFound()
     if not problem["description"].startswith("docs:"):
         raise ProblemDocsNotFound(id)
     return problem["description"][5:]
@@ -81,17 +96,25 @@ def get_problem_docs(id: str) -> str:
 
 # POST
 def add_problem(problem: Problems):
-    problems = read_json(problem_json)
+    problems = read_json(problems_json)
     if problem.id in problem:
         raise ProblemAlreadyExisted(problem.id)
 
     problem = DBProblems(**problem.model_dump())
     problem.dir = gen_path(problem.id)
     try:
-        os.makedirs(problem["dir"], exist_ok=False)
+        os.makedirs(problem.dir, exist_ok=False)
     except OSError:
         # raise ProblemAlreadyExisted(problem.id)
         pass
+
+    if problem.judger is not None:
+        try:
+            ast.parse(problem.judger)
+        except SyntaxError:
+            raise InvalidProblemJudger()
+        with open(path.join(problem.dir, "judger.py"), "w") as f:
+            f.write(problem.judger)
 
     if problem.test_type not in ["file", "std"]:
         raise TestTypeNotSupport()
@@ -102,7 +125,9 @@ def add_problem(problem: Problems):
             raise LanguageNotSupport(lang)
 
     problems[problem.id] = problem.model_dump()
-    write_json(problem_json, problems)
+    write_json(problems_json, problems)
+
+    return problem
 
 
 def add_problem_docs(id: str, file: UploadFile):
@@ -113,13 +138,13 @@ def add_problem_docs(id: str, file: UploadFile):
         raise ProblemDocsAlreadyExist(problem.id)
 
     file.filename = f"{uuid.uuid4().__str__()}.pdf"
-    with open(f"{file_dir}/{file.filename}", "wb") as f:
+    with open(f"{files_dir}/{file.filename}", "wb") as f:
         f.write(file.file.read())
     file.file.close()
 
-    problems = read_json(problem_json)
+    problems = read_json(problems_json)
     problems[problem["id"]]["description"] = f"docs:{file.filename}"
-    write_json(problem_json, problems)
+    write_json(problems_json, problems)
 
 
 def add_problem_testcases(id: str, upfile: UploadFile):
@@ -131,7 +156,7 @@ def add_problem_testcases(id: str, upfile: UploadFile):
 # PATCH
 def update_problem(id, problem: UpdateProblems):
     problem = problem.model_dump()
-    problems = read_json(problem_json)
+    problems = read_json(problems_json)
     if id not in problems:
         raise ProblemNotFound(id)
 
@@ -147,7 +172,9 @@ def update_problem(id, problem: UpdateProblems):
         if val is not None and problems[id][key] != val:
             problems[id][key] = val
 
-    write_json(problem_json, problems)
+    write_json(problems_json, problems)
+
+    return problems[id]
 
 
 def update_problem_docs(id: str, file: UploadFile):
@@ -156,25 +183,39 @@ def update_problem_docs(id: str, file: UploadFile):
     if not problem.description.startswith("docs:"):
         raise ProblemDocsNotFound()
 
-    with open(path.join(file_dir, problem['description'][5:]), "wb") as f:
+    with open(path.join(files_dir, problem['description'][5:]), "wb") as f:
         f.write(file.read())
     file.close()
 
 
 def update_problem_testcases(id: str, upfile: UploadFile):
-    add_problem_testcases(id=id, upfile=upfile)
+    problem = get_problem(id)
+
+    unzip_testcases(problem, upfile, True)
+
+
+# def update_problem_judger(id: str, code: str):
+#     problem = get_problem(id)
+#
+#     try:
+#         ast.parse(code)
+#     except SyntaxError:
+#         raise InvalidProblemJudger()
+#
+#     with open(os.path.join(problem.dir, "judger.py"), "w") as f:
+#         f.write(code)
 
 
 # DELETE
 def delete_problem(id: str):
-    problems = read_json(problem_json)
+    problems = read_json(problems_json)
     if id not in problems:
         raise ProblemNotFound(id)
     problem = problems[id]
     if problem["description"].startswith("docs:"):
-        os.remove(path.join(file_dir, problem["description"][5:]))
+        os.remove(path.join(files_dir, problem["description"][5:]))
     del problems[id]
-    write_json(problem_json, problems)
+    write_json(problems_json, problems)
 
 
 """
@@ -184,34 +225,35 @@ Submissions
 
 # GET
 def get_submission_ids() -> typing.List[str]:
-    return list(read_json(submission_json).keys())
+    return list(read_json(submissions_json).keys())
 
 
 def get_submission_filter(func: typing.Callable[[DBSubmissions], bool]) -> list[DBSubmissions]:
-    submissions = read_json(submission_json)
+    submissions = read_json(submissions_json)
     return [DBSubmissions(**v) for k, v in submissions.items() if func(DBSubmissions(**v))]
 
 
 def get_submission(id: str) -> typing.Optional[Submissions]:
     if id not in get_submission_ids():
         raise SubmissionNotFound(id)
-    return Submissions(**read_json(submission_json)[id])
+    return Submissions(**read_json(submissions_json)[id])
 
 
-def get_submission_status(id: str) -> SubmissionResult:
-    submission = get_submission(id)
-    results: list = [result for result in submission.results if result["status"] >= 0]
-    results.sort(key=lambda x: (x["status"], x["time"]))
-    return results[0] if results else {}
+# def get_submission_status(id: str) -> SubmissionResult:
+#     submission = get_submission(id)
+#     # results: list = [result for result in submission.results if result["status"] >= 0]
+#     # results.sort(key=lambda x: (x["status"], x["time"]))
+#     return submission.result
 
 
 # POST
-def add_submission(submission: Submissions):
+def add_submission(submission: Submissions, submitter: DBUser):
     if submission.id in get_submission_ids():
         raise SubmissionAlreadyExist(submission.id)
 
     submission = DBSubmissions(**submission.model_dump())
-    submission["dir"] = path.join(submission_dir, submission['id'])
+    submission["by"] = submitter.id
+    submission["dir"] = path.join(submissions_dir, submission['id'])
     submission["file_path"] = path.join(submission["dir"],
                                         declare.Language[submission["lang"][0]].file.format(id=submission["id"]))
 
@@ -236,21 +278,23 @@ def add_submission(submission: Submissions):
         file.write(submission["code"])
     submission.code = ""
 
-    submissions = read_json(submission_json)
+    submissions = read_json(submissions_json)
     submissions[submission["id"]] = submission
-    write_json(submission_json, submissions)
+    write_json(submissions_json, submissions)
+
+    return submission
 
 
 # PATCH
 def update_submission(id: str, submission: UpdateSubmissions):
     submission = submission.model_dump()
-    submissions = read_json(submission_json)
+    submissions = read_json(submissions_json)
     if id not in submissions:
         raise SubmissionNotFound(id)
 
     if submission["id"] is not None and id != submission["id"]:
         submissions[submission["id"]] = submissions[id]
-        submissions[submission["id"]]["dir"] = path.join(submission_dir, submission["id"])
+        submissions[submission["id"]]["dir"] = path.join(submissions_dir, submission["id"])
         del submissions[id]
 
     # if submission == Submissions(**submissions[id]):
@@ -260,7 +304,8 @@ def update_submission(id: str, submission: UpdateSubmissions):
         if val is not None and submissions[id][key] != val:
             submissions[id][key] = val
 
-    write_json(submission_json, submissions)
+    write_json(submissions_json, submissions)
+    return submissions[id]
 
 
 # OTHER :D
@@ -292,34 +337,53 @@ User
 
 # GET
 def get_user_ids() -> typing.List[str]:
-    return list(read_json(user_json).keys())
+    return list(read_json(users_json).keys())
 
 
 def get_user_filter(func: typing.Callable[[DBUser], bool]) -> list[DBUser]:
-    return [DBUser(**v) for k, v in read_json(user_json).items() if func(DBUser(**v))]
+    return [DBUser(**v) for k, v in read_json(users_json).items() if func(DBUser(**v))]
 
 
 def get_user(id: str) -> typing.Optional[DBUser]:
     if id not in get_user_ids():
         raise UserNotFound(id)
-    return DBUser(**read_json(user_json)[id])
+    return DBUser(**read_json(users_json)[id])
 
 
 # POST
-def add_user(user: User):
+def add_user(user: User, creator: DBUser | str | None = None):
     if user.id in get_user_ids():
         raise UserAlreadyExist(user.id)
 
+    if isinstance(creator, str) and creator == "@system@":
+        pass
+
+    elif not user.roles or not creator:
+        user.roles = ["@default"]
+
+    else:
+        roles = [get_role(role) for role in user.roles]
+        for role in roles:
+            for permission in role.permissions:
+                if not has_permission(creator, permission):
+                    raise PermissionDenied(permission)
+                if permission not in declare.Permission:
+                    raise PermissionNotFound(permission)
+
+    user = DBUser(**user.model_dump())
+
     user.password = utils.hash(user.password)
-    users = read_json(user_json)
+    users = read_json(users_json)
     users[user.id] = user.model_dump()
-    write_json(user_json, users)
+    write_json(users_json, users)
+
+    return user
 
 
 # PATCH
 def update_user(id: str, user: UpdateUser):
     user = user.model_dump()
-    users = read_json(user_json)
+    users = read_json(users_json)
     if id not in users:
         raise UserNotFound(id)
 
@@ -334,13 +398,85 @@ def update_user(id: str, user: UpdateUser):
 
             users[id][key] = val
 
-    write_json(user_json, users)
+    write_json(users_json, users)
+    return users[id]
 
 
 # DELETE
 def delete_user(id: str):
-    users = read_json(user_json)
+    users = read_json(users_json)
     if id not in users:
         raise UserNotFound(id)
     del users[id]
-    write_json(user_json, users)
+    write_json(users_json, users)
+
+
+"""
+Role
+"""
+
+
+# GET
+def get_role_ids() -> typing.List[str]:
+    return list(read_json(roles_json).keys())
+
+
+def get_role_filter(func: typing.Callable[[DBRole], bool]) -> list[DBRole]:
+    return [DBRole(**v) for k, v in read_json(roles_json).items() if func(DBRole(**v))]
+
+
+def get_role(id: str) -> typing.Optional[DBRole]:
+    if id not in get_role_ids():
+        raise RoleNotFound(id)
+    return DBRole(**read_json(roles_json)[id])
+
+
+# POST
+def add_role(role: Role):
+    if role.id in get_role_ids():
+        raise RoleAlreadyExist(role.id)
+
+    roles = read_json(roles_json)
+    roles[role.id] = role.model_dump()
+    write_json(roles_json, roles)
+
+    return role
+
+
+# PATCH
+def update_role(id: str, role: UpdateRole):
+    role = role.model_dump()
+    roles = read_json(roles_json)
+    if id not in roles:
+        raise RoleNotFound(id)
+
+    if role["id"] is not None and id != role["id"]:
+        roles[role["id"]] = roles[id]
+        del roles[id]
+
+    for key, val in role.items():
+        if val is not None and roles[id][key] != val:
+            roles[id][key] = val
+
+    write_json(roles_json, roles)
+
+    return roles[id]
+
+
+# DELETE
+def delete_role(id: str):
+    roles = read_json(roles_json)
+    if id not in roles:
+        raise RoleNotFound(id)
+    del roles[id]
+    write_json(roles_json, roles)
+
+
+# OTHER
+def uid_has_permission(uid: str, permission: str) -> bool:
+    return has_permission(get_user(uid), permission)
+
+
+def has_permission(user: DBUser, permission: str) -> bool:
+    return ("@admin" in user.roles or
+            len(get_role_filter(lambda role: role.id in user.roles and permission in role.permissions)) > 0)

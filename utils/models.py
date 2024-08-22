@@ -8,7 +8,7 @@ import sqlmodel
 def partial_model(model: sqlmodel.SQLModel):
     """
     Create a partial model from a pydantic.BaseModel
-    From https://stackoverflow.com/a/76560886/17106809
+    From: https://stackoverflow.com/a/76560886/17106809
     """
 
     def make_field_optional(

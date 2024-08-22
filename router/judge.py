@@ -3,53 +3,49 @@ import json
 import logging
 import threading
 
-import redis
-from fastapi import APIRouter, Response, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, status, WebSocket, WebSocketDisconnect, Depends
 
 import db
 import judge
 import utils
 
-# import uuid
 
-logger = logging.getLogger("uvicorn.error")
-judge_manger = judge.JudgeManager()
-loop: threading.Thread = threading.Thread(target=judge_manger.loop)
-heartbeat: threading.Thread = threading.Thread(target=judge_manger.heartbeat)
-redis_client: redis.Redis = None
-queue_manager: db.redis.QueueManager = None
+thread_manager: utils.ThreadingManager
+judge_manger: judge.JudgeManager
+loop: utils.Thread
+heartbeat: utils.Thread
+queue_manager: db.queue_manager
+logger: logging.Logger = logging.getLogger("justyse.router.judge")
+logger.propagate = False
+logger.addHandler(utils.console_handler("Judge router"))
 
 
-async def start(*args):
-    global loop, heartbeat, redis_client, queue_manager
+def start(thread_manager_: utils.ThreadingManager):
+    global loop, heartbeat, queue_manager, thread_manager, judge_manger
+    thread_manager = thread_manager_
+    queue_manager = db.queue_manager
 
-    logger.info("Starting services...")
+    logger.info("Starting judge services...")
 
-    if utils.config.store_place.startswith("sql:"):
-        db.sql.create_all()
-        logger.info("Created SQLModel Tables")
-
-    redis_client = redis.Redis.from_url(utils.config.redis_server)
-    try:
-        redis_client.ping()  # noqa
-    except redis.exceptions.ConnectionError as error:
-        logger.error(f"Failed to connect to Redis: {utils.config.redis_server}")
-        raise error from error
-    queue_manager = db.redis.QueueManager(redis_client)
-    logger.info(f"Connected to Redis: {utils.config.redis_server}")
-
+    judge_manger = judge.JudgeManager(thread_manager)
     judge_manger.from_json()
 
-    loop.start()
+    loop = thread_manager.create_thread("judge_manager.loop",
+                                        judge_manger.loop,
+                                        daemon=False,
+                                        event=judge_manger.stop)
     logger.info("Loop is started")
 
-    heartbeat.start()
+    heartbeat = thread_manager.create_thread("judge_manager.heartbeat",
+                                             judge_manger.heartbeat,
+                                             daemon=False,
+                                             event=judge_manger.stop)
     logger.info("Heartbeat is started")
 
     logger.info("Services are started.")
 
 
-async def stop(*args):
+def stop(*args):
     logger.info("Killing services...")
 
     judge_manger.stop.set()
@@ -57,20 +53,20 @@ async def stop(*args):
     judge_manger.stop_recv()
     logger.info("Recv is stopped")
 
-    loop.join()
+    thread_manager.close_thread("judge_manager.loop", True)
     logger.info("Loop is stopped")
 
-    heartbeat.join()
+    thread_manager.close_thread("judge_manager.heartbeat", True)
     logger.info("Heartbeat is stopped")
 
-    judge_manger.join_thread()
+    thread_manager.close_timers("judge_manager.timers.*", True)
+    logger.info("Timers are stopped")
+
+    thread_manager.close_threads("judge_manager.threads.*", True)
     logger.info("Threads are stopped")
 
-    redis_client.save()  # noqa
-    logger.info("Saved Redis data")
-
-    redis_client.close()
-    logger.info("Closed Redis connection")
+    if queue_manager:
+        queue_manager.stop()
 
     logger.info("Services are killed. Shutting down...")
 
@@ -83,38 +79,100 @@ Judge
 
 
 # POST
-@judge_router.post("/{id}")
-async def submission_judge(id: str, response: Response):
+@judge_router.post("/{id}",
+                   summary="Add submission to judge queue",
+                   status_code=status.HTTP_201_CREATED,
+                   dependencies=[Depends(utils.has_permission("submission:judge"))],
+                   responses={
+                       201: {
+                           "description": "Submission added to judge queue",
+                           "content": {
+                               "application/json": {
+                                   "example": {
+                                       "id": "submission_id:judge_id"
+                                   }
+                               }
+                           }
+                       },
+                       404: {
+                           "description": "Submission not found",
+                           "content": {
+                               "application/json": {
+                                   "examples": {
+                                       "Submission not found": {
+                                           "summary": "Submission not found",
+                                           "value": {
+                                               "message": "Submission not found"
+                                           }
+                                       },
+                                       "Problem not found": {
+                                           "summary": "Problem not found",
+                                           "value": {
+                                               "message": "Problem not found"
+                                           }
+                                       }
+                                   }
+                               }
+                           }
+                       },
+                       503: {"description": "Redis not connected",
+                             "content": {"application/json": {"example": {"message": "Redis not connected"}}}},
+                       500: {
+                           "description": "Internal server error",
+                           "content": {
+                               "application/json": {
+                                   "examples": {
+                                       **utils.InternalServerErrorResponse_,
+                                       "Out of judge id": {
+                                           "sumary": "Out of judge id",
+                                           "value": {
+                                               "message": "Out of judge id"
+                                           }
+                                       }
+                                   }
+                               }
+                           }
+                       }
+                   })
+async def submission_judge(id: str):
+    if queue_manager is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"message": "Redis not connected"})
+
     submission: db.DBSubmissions = None
     problem: db.DBProblems = None
 
     try:
         submission = db.get_submission(id)
     except db.exception.SubmissionNotFound:
-        response.status_code = status.HTTP_404_NOT_FOUND
-        return "submission not found D:"
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"message": "Submission not found"})
     except Exception as error:
-        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        logger.error(f'judge {id} raise {error}')
-        return error
+        logger.error(f'get submission {id} raise error, detail')
+        logger.exception(error)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=utils.InternalServerError)
 
     try:
         problem = db.get_problem(submission["problem"])
     except db.exception.ProblemNotFound:
-        response.status_code = status.HTTP_404_NOT_FOUND
-        return "problem not found D:"
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"message": "Problem not found"})
     except Exception as error:
-        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        logger.error(f'judge {id} raise {error}')
-        return error
+        logger.error(f'get problem from submission {id} raise error')
+        logger.exception(error)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=utils.InternalServerError)
 
     # judge_id = str(uuid.uuid4()).split('-')[0]
+    check = 0
     judge_id = utils.rand_uuid(1)
     while queue_manager.check(f"judge::{submission.id}:{judge_id}"):
         judge_id = utils.rand_uuid(1)
+        check += 1
+        if check > 1000000:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"message": "Out of judge id"}
+            )
     queue_id = f"{submission.id}:{judge_id}"
 
-    judge_manger.add_submission(submission.id, queue_manager.create(f"judge::{queue_id}"), asyncio.Event())
+    judge_manger.add_submission(submission.id, queue_manager.create(f"judge::{queue_id}"), threading.Event())
     return queue_id
 
 
@@ -123,10 +181,13 @@ async def submission_judge(id: str, response: Response):
 async def submission_judge_ws(id: str, ws: WebSocket):
     await ws.accept()
 
+    if queue_manager is None:
+        return await ws.close(status.WS_1011_INTERNAL_ERROR, "redis not connected")
+
     submission_id, judge_id = id.split(':')
 
     if not submission_id or not judge_id:
-        return await ws.close(status.WS_1013_TRY_AGAIN_LATER, "invalid id")
+        return await ws.close(status.WS_1008_POLICY_VIOLATION, "invalid id")
 
     queue_id = f"judge::{submission_id}:{judge_id}"
     if queue_manager.check(queue_id):
@@ -134,7 +195,7 @@ async def submission_judge_ws(id: str, ws: WebSocket):
     elif queue_manager.check_cache(queue_id):
         msg_queue = queue_manager.get_cache(queue_id)
     else:
-        return await ws.close(status.WS_1013_TRY_AGAIN_LATER, "can find judge queue")
+        return await ws.close(status.WS_1008_POLICY_VIOLATION, "can find judge queue")
 
     for msg in msg_queue.get_all():
         msg = utils.padding(msg, 2)
@@ -148,7 +209,7 @@ async def submission_judge_ws(id: str, ws: WebSocket):
 
     judge_abort = judge_manger._judge_abort.get(submission_id, None)
     if judge_abort is None:
-        return await ws.close(status.WS_1013_TRY_AGAIN_LATER, "judge not started")
+        return await ws.close(status.WS_1008_POLICY_VIOLATION, "judge not started")
 
     async def wait_for_abort():
         while True:
@@ -202,14 +263,23 @@ server_router = APIRouter(prefix="/server", tags=["server"])
 
 
 # GET
-@server_router.get("s/")
+@server_router.get("s/",
+                   summary="Get all servers",
+                   response_model=list[dict[str, str]],
+                   dependencies=[Depends(utils.has_permission("judge_server:view"))])
 def judge_servers():
     return [{"id": connection._id, "name": connection.name, "status": connection.status()}
             for _, connection in judge_manger._connections.items()]
 
 
 # POST
-@server_router.post("/")
+@server_router.post("/",
+                    summary="Add server",
+                    dependencies=[Depends(utils.has_permission("judge_server:add"))],
+                    responses={
+                        409: {"description": "Server already exists",
+                              "content": {"application/json": {"example": "Server already exists"}}}
+                    })
 async def server_add(server: judge.data.Server):
     if server.id in judge_manger._connections:
         return "server already exists", status.HTTP_409_CONFLICT
@@ -218,7 +288,13 @@ async def server_add(server: judge.data.Server):
     return "added"
 
 
-@server_router.post("/{id}/pause")
+@server_router.post("/{id}/pause",
+                    summary="Pause server",
+                    dependencies=[Depends(utils.has_permission("judge_server:edit"))],
+                    responses={
+                        404: {"description": "Server not found",
+                              "content": {"application/json": {"example": "Server not found"}}}
+                    })
 async def server_pause(id: str):
     if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
@@ -227,7 +303,13 @@ async def server_pause(id: str):
     return "paused"
 
 
-@server_router.post("/{id}/resume")
+@server_router.post("/{id}/resume",
+                    summary="Resume server",
+                    dependencies=[Depends(utils.has_permission("judge_server:edit"))],
+                    responses={
+                        404: {"description": "Server not found",
+                              "content": {"application/json": {"example": "Server not found"}}}
+                    })
 async def server_resume(id: str):
     if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
@@ -236,7 +318,13 @@ async def server_resume(id: str):
     return "resumed"
 
 
-@server_router.post("/{id}/disconnect")
+@server_router.post("/{id}/disconnect",
+                    summary="Disconnect server",
+                    dependencies=[Depends(utils.has_permission("judge_server:edit"))],
+                    responses={
+                        404: {"description": "Server not found",
+                              "content": {"application/json": {"example": "Server not found"}}}
+                    })
 async def server_disconnect(id: str):
     if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
@@ -245,7 +333,13 @@ async def server_disconnect(id: str):
     return "disconnected"
 
 
-@server_router.post("/{id}/reconnect")
+@server_router.post("/{id}/reconnect",
+                    summary="Reconnect server",
+                    dependencies=[Depends(utils.has_permission("judge_server:edit"))],
+                    responses={
+                        404: {"description": "Server not found",
+                              "content": {"application/json": {"example": "Server not found"}}}
+                    })
 async def server_reconnect(id: str):
     if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND
@@ -255,7 +349,13 @@ async def server_reconnect(id: str):
 
 
 # DELETE
-@server_router.delete("/{id}")
+@server_router.delete("/{id}",
+                      summary="Delete server",
+                      dependencies=[Depends(utils.has_permission("judge_server:delete"))],
+                      responses={
+                          404: {"description": "Server not found",
+                                "content": {"application/json": {"example": "Server not found"}}}
+                      })
 async def server_delete(id: str):
     if id not in judge_manger._connections:
         return "server not found", status.HTTP_404_NOT_FOUND

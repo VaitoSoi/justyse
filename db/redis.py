@@ -7,7 +7,7 @@ import redis
 from . import exception
 
 
-class JudgeMessages:
+class RedisQueue:
     client: redis.Redis
     name: str
     closed: bool = False
@@ -16,9 +16,9 @@ class JudgeMessages:
         list[tuple[typing.Callable, asyncio.AbstractEventLoop]]
     ] = {
         'get': [],
+        'get_all': [],
         'put': [],
         'close': [],
-        'get_all': []
     }
 
     def __init__(self, client: redis.Redis, name: str, from_cache: bool = False):
@@ -95,7 +95,7 @@ class JudgeMessages:
 
 class QueueManager:
     client: redis.Redis = None
-    queues: dict[str, JudgeMessages] = {}
+    queues: dict[str, RedisQueue] = {}
 
     def __init__(self, client: redis.Redis = None):
         if client is not None:
@@ -107,12 +107,12 @@ class QueueManager:
     def create(self, name: str):
         if self.check(name):
             raise exception.QueueAlreadyExist(name)
-        queue = JudgeMessages(self.client, name)
+        queue = RedisQueue(self.client, name)
         self.queues[name] = queue
         return queue
 
-    def add(self, queue: JudgeMessages, skip_check: bool = False):
-        if not isinstance(queue, JudgeMessages):
+    def add(self, queue: RedisQueue, skip_check: bool = False):
+        if not isinstance(queue, RedisQueue):
             raise exception.QueueNotValid(type(queue))
         if skip_check is False and self.check(queue.name):
             raise exception.QueueAlreadyExist(queue.name)
@@ -124,7 +124,7 @@ class QueueManager:
 
         return name in self.queues and not self.queues[name].closed
 
-    def get(self, name: str) -> JudgeMessages:
+    def get(self, name: str) -> RedisQueue:
         if not self.check(name):
             raise exception.QueueNotFound(name)
         return self.queues[name]
@@ -141,7 +141,7 @@ class QueueManager:
         if not self.check_cache(name):
             raise exception.QueueNotFound(name)
 
-        return JudgeMessages(self.client, name, True)
+        return RedisQueue(self.client, name, True)
 
     def close(self, name: str):
         if self.client is None:
@@ -150,5 +150,9 @@ class QueueManager:
         queue = self.get(name)
         queue.close()
 
-
-
+    def stop(self):
+        for queue in self.queues.values():
+            queue.close()
+        self.client.close()
+        self.client = None
+        self.queues.clear()

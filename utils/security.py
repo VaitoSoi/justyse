@@ -1,17 +1,19 @@
 import hashlib
+import os
 import typing
 import uuid
 
 import fastapi
-import fastapi.security
+import fastapi.security as security
 import jwt
 from passlib.hash import argon2, scrypt, sha256_crypt, sha512_crypt, bcrypt
 
-import db
+from . import exception
 from .config import config
 
-signature = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()
-oauth2_scheme = fastapi.security.OAuth2PasswordBearer(tokenUrl="/api/user/login")
+signature = os.getenv("SIGNATURE", hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest())
+oauth2_scheme = security.OAuth2PasswordBearer(tokenUrl="/api/user/login")
+optional_oauth2_scheme = security.OAuth2PasswordBearer(tokenUrl="/api/user/login", auto_error=False)
 
 
 def rand_uuid(node: tuple[int, int] | int = -1) -> str:
@@ -33,63 +35,143 @@ def hash(s: str) -> str:
     match config.pass_store:
         case 'plain':
             return s
+
         case 'hashed':
             match config.hash_func:
                 case "bcrypt":
                     return bcrypt.hash(s)
+
                 case "argon2":
                     return argon2.hash(s)
+
                 case "scrypt":
                     return scrypt.hash(s)
+
                 case "sha512":
                     return sha512_crypt.hash(s)
+
                 case "sha256":
                     return sha256_crypt.hash(s)
+
                 case _:
-                    raise ValueError(f"Unknown hash function")
+                    raise ValueError(f"Unknown hash function: {config.hash_func}")
         case _:
-            raise ValueError(f"Unknown password store type")
+            raise ValueError(f"Unknown password store: {config.pass_store}")
 
 
 def check_hash(s: str, h: str) -> bool:
     match config.pass_store:
         case 'plain':
             return s == h
+
         case 'hashed':
             match config.hash_func:
                 case "bcrypt":
                     return bcrypt.verify(s, h)
+
                 case "argon2":
                     return argon2.verify(s, h)
+
                 case "scrypt":
                     return scrypt.verify(s, h)
+
                 case "sha512":
                     return sha512_crypt.verify(s, h)
+
                 case "sha256":
                     return sha256_crypt.verify(s, h)
+
                 case _:
-                    raise ValueError(f"Unknown hash function")
+                    raise ValueError(f"Unknown hash function: {config.hash_func}")
+
         case _:
-            raise ValueError(f"Unknown password store type")
+            raise ValueError(f"Unknown password store: {config.pass_store}")
 
 
-def decode_jwt(token: str) -> dict:
-    print(token)
+def decode_jwt(token: str, verify_exp: bool = True) -> dict:
     if not token:
-        raise fastapi.HTTPException(status_code=401, detail="Token is missing")
+        raise exception.TokenNotFound()
     try:
-        return jwt.decode(token, signature, algorithms=["HS256"])
+        return jwt.decode(token, signature, verify_exp=verify_exp, algorithms=["HS256"])
+
     except jwt.ExpiredSignatureError:
-        raise fastapi.HTTPException(status_code=401, detail="Token is expired")
+        raise exception.TokenExpired()
+
     except jwt.InvalidSignatureError:
-        raise fastapi.HTTPException(status_code=401, detail="Token is invalid")
+        raise exception.SignatureInvalid()
 
 
-def get_user(token: typing.Annotated[str, fastapi.Depends(oauth2_scheme)]) -> dict:
-    decoded = decode_jwt(token)
-    try:
-        user = db.get_user(decoded["user"])
-    except db.exception.UserNotFound:
-        raise fastapi.HTTPException(status_code=404, detail="User not found")
-    else:
-        return user
+def get_user_id(oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> dict:
+
+    def wrapper(token: typing.Annotated[str, fastapi.Depends(oauth_scheme)]):
+        try:
+            decoded = decode_jwt(token)
+            return decoded["user"] if decoded and "user" in decoded else None
+
+        except exception.TokenNotFound:
+            raise fastapi.HTTPException(
+                status_code=401,
+                detail={
+                    "message": "Token not found",
+                    "code": "token_not_found"
+                }
+            )
+
+        except exception.TokenExpired:
+            raise fastapi.HTTPException(
+                status_code=401,
+                detail={
+                    "message": "Token expired",
+                    "code": "token_expired"
+                }
+            )
+
+        except exception.SignatureInvalid:
+            raise fastapi.HTTPException(
+                status_code=401,
+                detail={
+                    "message": "Token signature invalid",
+                    "code": "token_signature_invalid"
+                }
+            )
+
+    return wrapper
+
+
+def get_user(oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> dict:
+    import db
+
+    def wrapper(user_id: typing.Annotated[str, fastapi.Depends(get_user_id(oauth_scheme))]):
+        try:
+            return db.get_user(user_id)
+
+        except db.exception.UserNotFound:
+            raise fastapi.HTTPException(
+                status_code=404,
+                detail={
+                    "message": "User not found",
+                    "code": "user_not_found"
+                }
+            )
+
+    return wrapper
+
+
+def has_permission(permission: str, oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> bool:
+    import db
+
+    def wrapper(user: typing.Annotated[db.declare.DBUser, fastapi.Depends(get_user(oauth_scheme))]):
+        if db.has_permission(user, permission) is not True:
+            raise fastapi.HTTPException(
+                status_code=403,
+                detail={
+                    "message": "Permission denied",
+                    "code": "permission_denied",
+                    "detail": {
+                        "missing": permission
+                    }
+                })
+
+        return True
+
+    return wrapper

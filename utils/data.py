@@ -1,4 +1,5 @@
 import typing
+import fnmatch
 
 
 def find(key: typing.Any, arr: typing.List[typing.Any]) -> int:
@@ -10,7 +11,7 @@ def find(key: typing.Any, arr: typing.List[typing.Any]) -> int:
     return -1
 
 
-def chunks(arr: typing.Union[typing.List[typing.Any], typing.Tuple], n: int):
+def chunks(arr: list | tuple, n: int):
     """
     Yield n number of sequential chunks from list.
     From: https://stackoverflow.com/a/54802737/17106809
@@ -26,3 +27,10 @@ def padding(arr: list | tuple, length: int, fill: typing.Any = None):
     Pad the list to the specified length
     """
     return arr + ([fill] if isinstance(arr, list) else (fill,)) * (length - len(arr))
+
+
+def getitem_pattern(data: dict, pattern: str) -> dict:
+    """
+    Get items from the dictionary that match the pattern
+    """
+    return {key: value for key, value in data.items() if fnmatch.fnmatch(key, pattern)}

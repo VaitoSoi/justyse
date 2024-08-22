@@ -58,6 +58,14 @@ class ProblemDocsAlreadyExist(AlreadyExist):
     pass
 
 
+class ProblemTestcaseAlreadyExist(AlreadyExist):
+    pass
+
+
+class InvalidProblemJudger(SyntaxError):
+    pass
+
+
 class InvalidTestcaseExtension(ValidationError):
     pass
 
@@ -99,6 +107,22 @@ class UserAlreadyExist(AlreadyExist):
 
 
 class UserNotFound(NotFound):
+    pass
+
+
+class RoleNotFound(NotFound):
+    pass
+
+
+class RoleAlreadyExist(AlreadyExist):
+    pass
+
+
+class PermissionDenied(ValueError):
+    pass
+
+
+class PermissionNotFound(NotFound):
     pass
 
 
