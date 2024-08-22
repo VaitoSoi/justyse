@@ -23,7 +23,7 @@ class Thread(threading.Thread):
             self._stop_event.set()
 
     def stopped(self):
-        return (self._stop_event.is_set() if self._stop_event is not None else True) and self.is_alive()
+        return (self._stop_event.is_set() if self._stop_event is not None else False) and not self.is_alive()
 
 
 class ThreadingManager:
@@ -83,13 +83,11 @@ class ThreadingManager:
                 raise KeyError(name)
 
     def close_threads(self, pattern: str = '*', join: bool = True):
-        # with self.lock:
         for name in self.threads.copy():
             if fnmatch.fnmatch(name, pattern):
                 self.close_thread(name, join)
 
     def clear_threads(self, pattern: str = '*'):
-        # with self.lock:
         for name in self.threads.copy():
             if fnmatch.fnmatch(name, pattern) and self.threads[name].stopped():
                 self.close_thread(name, join=False)

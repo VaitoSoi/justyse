@@ -92,6 +92,7 @@ class JudgeClient:
 
     def close(self):
         self._is_closed = True
+        self.stop_recv.set()
         self._judge_msg.put(['closed'])
         self._status_msg.put(['closed'])
         self._other_msg.put(['closed'])

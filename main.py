@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import os
 
 import fastapi
 import uvicorn
@@ -32,8 +33,8 @@ Lifespan
 
 # print("\n".join(list(logging.root.manager.loggerDict.keys())))
 justyse_logger = logging.getLogger("justyse")
+justyse_logger.setLevel(os.getenv("LOG_LEVEL", "DEBUG"))
 justyse_logger.propagate = False
-justyse_logger.setLevel(logging.DEBUG)
 
 uvicorn_logger = logging.getLogger("uvicorn")
 uvicorn_logger.handlers.clear()

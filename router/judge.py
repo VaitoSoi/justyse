@@ -50,8 +50,11 @@ def stop(*args):
 
     judge_manger.stop.set()
 
-    judge_manger.stop_recv()
+    thread_manager.close_thread("judge_manager.recv.*", True)
     logger.info("Recv is stopped")
+
+    thread_manager.close_threads("judge_manager.ping.*", True)
+    logger.info("Ping is stopped")
 
     thread_manager.close_thread("judge_manager.loop", True)
     logger.info("Loop is stopped")
@@ -62,8 +65,8 @@ def stop(*args):
     thread_manager.close_timers("judge_manager.timers.*", True)
     logger.info("Timers are stopped")
 
-    thread_manager.close_threads("judge_manager.threads.*", True)
-    logger.info("Threads are stopped")
+    thread_manager.close_threads("judge_manager.judge:*", True)
+    logger.info("Judge threads are stopped")
 
     if queue_manager:
         queue_manager.stop()
@@ -122,13 +125,13 @@ Judge
                            "content": {
                                "application/json": {
                                    "examples": {
-                                       **utils.InternalServerErrorResponse_,
                                        "Out of judge id": {
                                            "sumary": "Out of judge id",
                                            "value": {
                                                "message": "Out of judge id"
                                            }
-                                       }
+                                       },
+                                       **utils.InternalServerErrorResponse_
                                    }
                                }
                            }

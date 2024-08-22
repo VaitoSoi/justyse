@@ -21,6 +21,9 @@ class JudgeManager:
 
     _judge_queue: queue.Queue = queue.Queue()
     _judge_abort: dict[str, threading.Event] = {}
+    _timers: list[threading.Thread] = []
+    _judge_threads: list[threading.Thread] = []
+    _heartbeat_thread: threading.Thread = None
 
     _reconnect_timeout: int = utils.config.reconnect_timeout
     _recv_timeout: int = utils.config.recv_timeout
@@ -29,8 +32,6 @@ class JudgeManager:
     _retry: dict[str, int] = {}
 
     stop: threading.Event = threading.Event()
-    # judge_threads: list[threading.Thread] = []
-    # timers: list[threading.Timer] = []
 
     def __init__(self,
                  threading_manager: utils.ThreadingManager,
@@ -49,7 +50,6 @@ class JudgeManager:
             self._max_retry = max_retry
 
         self._logger = logging.getLogger("justyse.judge.manager")
-        self._logger.propagate = False
         self._logger.addHandler(utils.console_handler("Judge Manager"))
 
     def _get_connections(self):
@@ -262,17 +262,20 @@ class JudgeManager:
         self._judge_queue.put((submission_id, msg))
 
     def loop(self, skip_check_connection: bool = False):
-        if len(self._get_connections().values()) == 0 and not skip_check_connection:
-            self._logger.warning("Loop will sleep until a connection is created.")
-            while len(self._get_connections().values()) == 0 and not self.stop.is_set():
-                self._thread_manager.clear_timers("judge_manager.timers.reconnect:*")
-                time.sleep(2)
-            if not self.stop.is_set():
-                self._logger.info("Found one (or more :D) judge server, starting loop...")
 
         while not self.stop.is_set():
+            if len(self._get_connections().values()) == 0 and not skip_check_connection:
+                self._logger.warning("Loop will sleep until a connection is created.")
+                while len(self._get_connections().values()) == 0 and not self.stop.is_set():
+                    self._thread_manager.clear_timers("judge_manager.timers.reconnect:*")
+                    time.sleep(2)
+                if not self.stop.is_set():
+                    self._logger.info("Found one (or more :D) judge server, starting loop...")
+                else:
+                    break
+
             self._thread_manager.clear_timers("judge_manager.timers.reconnect:*")
-            self._thread_manager.clear_threads("judge_manager.threads.judge:*")
+            self._thread_manager.clear_threads("judge_manager.judge:*")
 
             if not self._judge_queue.empty() and self.is_free():
                 submission_id, msg = self._judge_queue.get()
@@ -303,7 +306,7 @@ class JudgeManager:
                                         "msg": msg,
                                         "abort": abort
                                     },
-                                    name=f"judge_manager.thread.judge:{submission_id}",
+                                    name=f"judge_manager.judge:{submission_id}",
                                 )
                             case 1:
                                 self.judge_ptps(
