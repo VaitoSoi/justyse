@@ -1,14 +1,14 @@
+import asyncio
 import json
 import logging
 import os
-import queue
-import threading
+# import queue
+# import threading
 import time
 import typing
 
 import pydantic
 import websockets
-import websockets.sync.client as ws_sync
 
 import db
 import declare
@@ -16,135 +16,131 @@ import utils
 from . import exception
 
 
+# import websockets.sync.client as ws_sync
+
+
 class JudgeClient:
     _logger: logging.Logger
 
-    _uri: str
-    _id: str
+    uri: str
+    id: str
     name: str
-    _ws: ws_sync.ClientConnection = None
-    _recv_timeout: int
-    _is_closed: bool = False
+    _ws: websockets.WebSocketClientProtocol = None
+    # _recv_timeout: int
+    is_closed: bool = False
     _pause: bool = False
-    _thread_manager: utils.ThreadingManager
+    # _thread_manager: utils.ThreadingManager
 
     _debug: typing.List[typing.Any] = []
-    _status_msg: queue.Queue = queue.Queue()
-    _judge_msg: queue.Queue = queue.Queue()
-    _other_msg: queue.Queue = queue.Queue()
+    _status_msg: asyncio.Queue
+    _judge_msg: asyncio.Queue
+    _other_msg: asyncio.Queue
 
     is_judging: bool = False
-    stop_judge: threading.Event = threading.Event()
-    stop_recv: threading.Event = threading.Event()
+    stop_judge: asyncio.Event = asyncio.Event()
+    stop_recv: asyncio.Event = asyncio.Event()
 
+    recv_task: asyncio.Task = None
+    heartbeat_task: asyncio.Task = None
     # recv_thread: threading.Thread = None
     # heartbeat_thread: threading.Thread = None
 
     def __init__(self,
                  uri: str,
                  id: str,
-                 name: str,
-                 thread_manager: utils.ThreadingManager,
-                 recv_timeout: int = 5):
-        self._uri = uri
-        self._id = id
+                 name: str,):
+        self.uri = uri
+        self.id = id
         self.name = name
-        self._recv_timeout = recv_timeout
-        self._thread_manager = thread_manager
-        self._is_closed = False
+        # self._recv_timeout = recv_timeout
+        # self._thread_manager = thread_manager
+        self.is_closed = False
 
         self._debug = []
-        self._status_msg = queue.Queue()
-        self._judge_msg = queue.Queue()
-        self._other_msg = queue.Queue()
+        self._status_msg = asyncio.Queue()
+        self._judge_msg = asyncio.Queue()
+        self._other_msg = asyncio.Queue()
 
         self.is_judging = False
 
-        self._logger = logging.getLogger(f"justyse.judge.{name}")
-        self._logger.propagate = False
-        self._logger.addHandler(utils.console_handler(f"Judge server#{id}"))
+        self._logger = logging.getLogger(f"justyse.judge.{id}")
+        self._logger.addHandler(utils.console_handler(f"Judge server#{self.id}"))
 
-    def connect(self):
+    async def connect(self):
         if self.is_judging is True:
             raise exception.ServerBusy()
 
-        self._ws = ws_sync.connect(self._uri)
-        self._ws.ping()
+        self._ws = await websockets.connect(self.uri)
+        fut = await self._ws.ping()
+        await fut
 
-        self._send(['declare.language', [utils.read(declare.judge.language_json), 'false']])
-        self._send(['declare.compiler', [utils.read(declare.judge.compiler_json), 'false']])
-        self._send(['declare.load', []])
+        await self._send(['declare.language', [utils.read(declare.judge.language_json), 'false']])
+        await self._send(['declare.compiler', [utils.read(declare.judge.compiler_json), 'false']])
+        await self._send(['declare.load', []])
 
+        # self._logger.debug(f"Connected to {self.name} server#{self._id}")
+
+        self.is_closed = False
         self.stop_judge.clear()
         self.stop_recv.clear()
-        self._thread_manager.create_thread(
-            name=f"judge_manager.threads.client_{self._id}.recv",
-            target=self.recv,
-            daemon=True,
-            event=self.stop_recv
-        )
-        self._thread_manager.create_thread(
-            name=f"judge_manager.threads.client_{self._id}.heartbeat",
-            target=self.ping,
-            daemon=True,
-            event=self.stop_judge,
-        )
+        self.recv_task = asyncio.create_task(self.recv())
+        self.heartbeat_task = asyncio.create_task(self.ping())
 
-    def close(self):
-        self._is_closed = True
+    async def close(self):
+        if self.is_closed:
+            return
+        self.is_closed = True
         self.stop_recv.set()
-        self._judge_msg.put(['closed'])
-        self._status_msg.put(['closed'])
-        self._other_msg.put(['closed'])
+        await self._judge_msg.put(['closed'])
+        await self._status_msg.put(['closed'])
+        await self._other_msg.put(['closed'])
 
         if self.is_judging:
             self.stop_judge.set()
 
-        # self.stop_recv.set()
-        # if self.recv_thread is not None and self.recv_thread.is_alive():
-        #     try:
-        #         self.recv_thread.join()
-        #
-        #     except RuntimeError:
-        #         pass
-        #
-        # if self.heartbeat_thread is not None and self.heartbeat_thread.is_alive():
-        #     try:
-        #         self.heartbeat_thread.join()
-        #
-        #     except RuntimeError:
-        #         pass
+        if self.recv_task is not None:
+            # self._logger.debug("Waiting for recv task to close")
+            self.recv_task.cancel()
+            try:
+                await self.recv_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.heartbeat_task is not None:
+            # self._logger.debug("Waiting for ping task to close")
+            self.heartbeat_task.cancel()
+            try:
+                await self.heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
         try:
-            self._ws.close()
+            await self._ws.close()
 
         except Exception:  # noqa
             pass
 
         self._ws = None
 
+        # self._logger.debug(f"Closed {self.name} server#{self.id}")
         return
 
-    def ping(self):
-        print(f"Start heartbeat for {self.name} server#{self._id}")
+    async def ping(self):
+        # self._logger.debug(f"Start heartbeat for {self.name} server#{self.id}")
         while not self.stop_recv.is_set():
+            # self._logger.debug(f"Heartbeat for {self.name} server#{self.id}")
             try:
                 start = time.time()
-
-                wait = self._ws.ping(utils.rand_uuid())
-                ret = wait.wait(timeout=self._recv_timeout)
-
+                fut = await self._ws.ping()
+                await fut
                 total = time.time() - start
 
-                if not ret:
-                    raise TimeoutError()
-
-                self._logger.debug(f"Heartbeat: {total:.3f}s")
+                # self._logger.debug(f"Heartbeat: {total:.3f}s")
 
             except (websockets.exceptions.ConnectionClosed,
                     websockets.exceptions.ConnectionClosedError,
                     websockets.exceptions.ConnectionClosedOK):
-                self.close()
+                await self.close()
                 break
 
             except TimeoutError:
@@ -156,54 +152,61 @@ class JudgeClient:
                 self._logger.error(f"Heartbeat error: wrong data")
                 # self.close()
 
+            except asyncio.CancelledError:
+                break
+
             except Exception as e:
                 self._logger.error(f"Heartbeat error")
                 self._logger.exception(e)
                 # self.close()
                 break
 
-            time.sleep(utils.config.heartbeat_interval)
-        print(f"End heartbeat for {self.name} server#{self._id}")
+            await asyncio.sleep(utils.config.heartbeat_interval)
 
-    def recv(self) -> typing.Any:
+    async def recv(self) -> typing.Any:
         while True:
             if self.stop_recv.is_set():
                 break
 
             try:
-                msg = self._ws.recv(self._recv_timeout)
+                async with asyncio.timeout(utils.config.recv_timeout):
+                    msg = await self._ws.recv()
 
             except (websockets.exceptions.ConnectionClosed,
                     websockets.exceptions.ConnectionClosedError,
                     websockets.exceptions.ConnectionClosedOK):
-                return self.close()
+                return await self.close()
 
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 continue
 
+            except asyncio.CancelledError:
+                break
+
             except Exception as e:
-                self._logger.error(f"Recive error while recieving data from Judge server#{self._id}, detail")
+                self._logger.error(f"Recive error while recieving data from Judge server#{self.id}, detail")
                 self._logger.exception(e)
-                return self.close()
+                return await self.close()
 
             else:
                 try:
                     msg = json.loads(msg)
 
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as error:
+                    self._logger.error(f"Recive error while decoding data from Judge server#{self.id}, detail")
+                    self._logger.exception(error)
+                    continue
 
                 if msg[0] == 'status':
-                    self._status_msg.put(msg)
+                    await self._status_msg.put(msg)
 
                 elif msg[0].startswith("judge."):
-                    self._judge_msg.put(msg)
+                    await self._judge_msg.put(msg)
 
                 else:
-                    # print(f'recieved {msg}')
-                    self._other_msg.put(msg)
+                    await self._other_msg.put(msg)
 
-    def _send(self, data: typing.Any):
+    async def _send(self, data: typing.Any):
         """
         Send data to the server.
         """
@@ -215,7 +218,7 @@ class JudgeClient:
             data = data.model_dump_json()
 
         try:
-            return self._ws.send(data)
+            return await self._ws.send(data)
 
         except (websockets.exceptions.ConnectionClosed,
                 websockets.exceptions.ConnectionClosedError,
@@ -223,35 +226,35 @@ class JudgeClient:
             return self.close()
 
         except Exception as e:
-            self._logger.error(f"Recive error while sending data to Judge server#{self._id}, detail:")
+            self._logger.error(f"Recive error while sending data to Judge server#{self.id}, detail:")
             self._logger.exception(e)
             return self.close()
 
-    def pause(self):
+    async def pause(self):
         self._pause = True
 
-    def resume(self):
+    async def resume(self):
         self._pause = False
 
-    def status(self) -> declare.Status:
-        if self._is_closed:
-            return "closed", None
+    async def status(self) -> declare.Status:
+        if self.is_closed:
+            return {"status": "closed"}
         if self._pause:
-            return "paused", None
+            return {"status": "paused"}
 
-        self._send(["command.status"])
-        response = self._status_msg.get()
+        await self._send(["command.status"])
+        response = await self._status_msg.get()
         if response[0] == 'closed':
-            return "closed", None
+            return {"status": "closed"}
 
         return declare.Status(**response[1])
 
-    def _init(self,
-              submission: db.Submissions,
-              problem: db.Problems,
-              test_range: typing.Tuple[int, int]):
+    async def _init(self,
+                    submission: db.Submissions,
+                    problem: db.Problems,
+                    test_range: typing.Tuple[int, int]):
 
-        self._send([
+        await self._send([
             'command.init',
             declare.JudgeSession(
                 submission_id=submission.id,
@@ -266,26 +269,26 @@ class JudgeClient:
             ).model_dump()
         ])
 
-        response = self._judge_msg.get()
+        response = await self._judge_msg.get()
         if response[0] == 'judge.init':
             if response[1].get("status", None) != 0:
                 raise exception.InitalizationError(response[1].get("error", None))
 
         return self._debug.append("initalized")
 
-    def _code(self, path: str):
+    async def _code(self, path: str):
         code = utils.read(path)
 
-        self._send(['command.code', [code]])
+        await self._send(['command.code', [code]])
 
-        response = self._judge_msg.get()
+        response = await self._judge_msg.get()
         if response[0] == 'judge.write:code':
             if response[1].get("status") != 0:
                 raise exception.CodeWriteError(response[1].get("error", None))
 
         return self._debug.append("written:code")
 
-    def _testcases(self, problem: db.Problems, test_range: typing.Tuple[int, int]):
+    async def _testcases(self, problem: db.Problems, test_range: typing.Tuple[int, int]):
         test_dir = os.path.join(problem.dir, "testcases")
         for i in range(test_range[0], test_range[1] + 1):
             input_file = os.path.join(test_dir, str(i), problem.test_name[0])
@@ -296,9 +299,9 @@ class JudgeClient:
             if not input_content and not output_content:
                 self._logger.warning(f"input file or output file of test {i} is empty")
 
-            self._send(["command.testcase", [i, input_content, output_content]])
+            await self._send(["command.testcase", [i, input_content, output_content]])
 
-            response = self._judge_msg.get()
+            response = await self._judge_msg.get()
             if response[0] == 'judge.write:testcase':
                 if response[1].get("status") != 0:
                     raise exception.TestcaseWriteError(response[1].get("error", None))
@@ -307,83 +310,101 @@ class JudgeClient:
 
             self._debug.append(f"written:testcase {i}")
 
-    def _judger(self, problem: db.Problems):
-        self._send(['command.judger', utils.read(os.path.join(problem.dir, "judger.py"))])
+    async def _judger(self, problem: db.Problems):
+        if not os.path.exists(os.path.join(problem.dir, "judger.py")):
+            return
 
-        response = self._judge_msg.get()
+        await self._send(['command.judger', utils.read(os.path.join(problem.dir, "judger.py"))])
+
+        response = await self._judge_msg.get()
         if response[0] == 'judge.write:judger':
             if response[1].get("status") != 0:
                 raise exception.JudgerWriteError(response[1].get("error", None))
 
         self._debug.append("written:judger")
 
-    def judge(self,
-              submission: db.Submissions,
-              problem: db.Problems,
-              test_range: typing.Tuple[int, int],
-              abort: threading.Event,
-              msg_queue: queue.Queue,
-              skip_debug: bool = True) -> None:
-        for status, data in self.judge_iter(submission, problem, test_range, abort, skip_debug):
-            msg_queue.put([status, data])
+    # async def judge(self,
+    #                 submission: db.Submissions,
+    #                 problem: db.Problems,
+    #                 test_range: typing.Tuple[int, int],
+    #                 abort: threading.Event,
+    #                 msg_queue: asyncio.Queue,
+    #                 skip_debug: bool = True) -> None:
+    #     async for status, data in self.judge_iter(submission, problem, test_range, abort, skip_debug):
+    #         await msg_queue.put([status, data])
 
-    def judge_iter(self,
-                   submission: db.Submissions,
-                   problem: db.Problems,
-                   test_range: typing.Tuple[int, int],
-                   abort: threading.Event,
-                   skip_debug: bool = True) -> typing.Iterator[tuple[str, str | dict]]:
+    async def judge_iter(self,
+                         submission: db.Submissions,
+                         problem: db.Problems,
+                         test_range: typing.Tuple[int, int],
+                         # abort: asyncio.Event,
+                         skip_debug: bool = True) -> typing.AsyncIterable[tuple[str, str | dict]]:
 
-        status = (self.status())["status"]
+        status = await self.status()
+        status = status["status"]
         if status == "busy":
             exception.ServerBusy()
 
         if self.stop_judge.is_set():
             return
 
-        judge_result = []
         self.stop_judge.clear()
         self.is_judging = True
         self._debug = []
 
         yield 'initting', None
-        self._send(['command.start', None])
-        self._init(submission=submission, problem=problem, test_range=test_range)
-        self._code(path=submission.file_path)
-        self._testcases(problem=problem, test_range=test_range)
+        await self._send(['command.start', None])
+        await self._init(submission=submission, problem=problem, test_range=test_range)
+        await self._code(path=submission.file_path)
+        await self._testcases(problem=problem, test_range=test_range)
         if problem.judger is not None:
-            self._judger(problem)
+            await self._judger(problem)
 
         yield 'judging', None
-        self._send(["command.judge", None])
+        await self._send(["command.judge", None])
 
         while True:
             if self.stop_judge.is_set():
-                self._send(['abort'])
+                await self._send(['command.abort'])
                 yield 'abort', None
                 return
 
-            if abort.is_set():
-                self._send(['abort'])
-                abort.clear()
+            # if abort.is_set():
+            #     self._logger.debug("Aborting...")
+            #     await self._send(['command.abort'])
+            #     abort.clear()
 
-            response = self._judge_msg.get()
+            try:
+                response = await asyncio.wait_for(self._judge_msg.get(), 1)
+            except asyncio.CancelledError:
+                break
+            except asyncio.TimeoutError:
+                continue
+
             if response[0] == 'closed':
                 break
 
             match response[0][6:]:
+                case 'error:system':
+                    yield 'error:system', response[1]
+
+                case 'error:compiler':
+                    yield 'error:compiler', response[1]
+
                 case 'compiler':
                     yield 'compiler', response[1]
 
                 case 'result':
-                    judge_result.append(response)
                     yield 'result', response[1]
 
                 case 'overall':
-                    judge_result.append(response)
                     yield 'overall', response[1]
 
                 case 'done':
+                    break
+
+                case 'aborted':
+                    yield 'aborted', response[1]
                     break
 
                 case _:
@@ -391,7 +412,6 @@ class JudgeClient:
                     if skip_debug is False:
                         yield 'debug', response
 
-        yield 'done', None
-
         self.is_judging = False
-        return None
+        yield 'done', None
+        return

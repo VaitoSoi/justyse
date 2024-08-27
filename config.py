@@ -97,6 +97,7 @@ translate = {
     },
 }
 
+
 config: dict[str, str] = {}
 config["lang"] = inquirer.prompt(
     [

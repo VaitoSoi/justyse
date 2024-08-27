@@ -1,6 +1,7 @@
 import fnmatch
 import logging
 import click
+import asyncio
 
 import fastapi
 
@@ -24,7 +25,7 @@ class InjectHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
         msg = self.format(record)
         msg = click.unstyle(msg)
-        queue.put(msg)
+        asyncio.run_coroutine_threadsafe(queue.put(msg, True), asyncio.get_running_loop())
         # print("putted", msg)
 
 
@@ -59,9 +60,9 @@ def inject():
 
 @admin_router.get("/log",
                   summary="Get log",
-                  response_model=list[str])
-def get_log():
-    return queue.get_all()
+                  response_model=list[str | dict])
+async def get_log():
+    return await queue.get_all()
 
 
 @admin_router.websocket("/log/ws")

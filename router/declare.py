@@ -14,7 +14,7 @@ logger.addHandler(utils.console_handler("Declare router"))
 
 
 # GET
-@declare_router.get("/",
+@declare_router.get("",
                     response_model=list[str],
                     responses={
                         200: {

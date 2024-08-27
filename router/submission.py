@@ -12,7 +12,7 @@ logger.addHandler(utils.console_handler("Submission ro."))
 
 
 # GET
-@submission_router.get("s/",
+@submission_router.get("s",
                        summary="Get all submissions",
                        response_model=list[str],
                        dependencies=[Depends(utils.has_permission("submission:views"))],
@@ -26,9 +26,9 @@ logger.addHandler(utils.console_handler("Submission ro."))
                                }
                            }
                        })
-def submissions():
+def submissions(keys: str | None = None):
     try:
-        return db.get_submission_ids()
+        return db.get_submission_ids() if keys is None else db.get_submissions(keys.split(","))
 
     except Exception as error:
         logger.error(f'get submissions raise error, detail')
@@ -111,7 +111,7 @@ def submission(id: str):
 
 
 # POST
-@submission_router.post("/",
+@submission_router.post("",
                         summary="Add submission",
                         status_code=status.HTTP_201_CREATED,
                         response_model=db.DBSubmissions,

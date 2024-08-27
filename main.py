@@ -22,9 +22,10 @@ from router import (
     judge_start,
     judge_stop,
     user_router,
-    # admin_router,
+    admin_router,
     admin_start,
     admin_inject,
+    role_router,
 )
 
 """
@@ -55,17 +56,17 @@ threading_manager = utils.ThreadingManager()
 @contextlib.asynccontextmanager
 async def lifespan(*args):
     db.setup()
-    db.setup_redis()
+    await db.setup_redis()
     if db.redis_client:
-        db.redis_client.delete("admin") # noqa
+        await db.redis_client.delete("admin") # noqa
 
     admin_start(*args)
     admin_inject()
-    judge_start(threading_manager)
+    await judge_start(threading_manager)
 
     yield
 
-    judge_stop(*args)
+    await judge_stop(*args)
 
 
 """
@@ -78,6 +79,9 @@ api_router.include_router(declare_router)
 api_router.include_router(judge_router)
 api_router.include_router(server_router)
 api_router.include_router(user_router)
+api_router.include_router(admin_router)
+api_router.include_router(role_router)
+
 
 app = FastAPI(
     lifespan=lifespan,

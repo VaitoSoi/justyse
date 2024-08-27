@@ -114,7 +114,7 @@ class RoleNotFound(NotFound):
     pass
 
 
-class RoleAlreadyExist(AlreadyExist):
+class RoleAlreadyExists(AlreadyExist):
     pass
 
 
@@ -150,5 +150,5 @@ class ResultNotFound(NotFound):
     pass
 
 
-class ResultAlreadyExist(AlreadyExist):
+class ResultAlreadyExists(AlreadyExist):
     pass

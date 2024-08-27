@@ -21,7 +21,10 @@ from .declare import (
     DBUser,
     UpdateProblems,
     UpdateSubmissions,
-    UpdateUser
+    UpdateUser,
+    Role,
+    DBRole,
+    UpdateRole
 )
 from .logging import logger
 
@@ -36,6 +39,7 @@ __all__ = [
     "Problems",
     "DBProblems",
     "UpdateProblems",
+    "get_problems",
     "get_problem_ids",
     "get_problem",
     "get_problem_docs",
@@ -50,6 +54,7 @@ __all__ = [
     "Submissions",
     "DBSubmissions",
     "UpdateSubmissions",
+    "get_submissions",
     "get_submission_ids",
     "get_submission",
     "add_submission",
@@ -60,12 +65,25 @@ __all__ = [
     "User",
     "UpdateUser",
     "DBUser",
+    "get_users",
     "get_user_ids",
     "get_user_filter",
     "get_user",
     "add_user",
     "update_user",
-    "delete_user"
+    "delete_user",
+    # Roles
+    "Role",
+    "DBRole",
+    "UpdateRole",
+    "get_roles",
+    "get_role_ids",
+    "get_role",
+    "add_role",
+    "update_role",
+    "delete_role",
+    "uid_has_permission",
+    "has_permission",
 ]
 
 
@@ -102,6 +120,7 @@ delete_problem: typing.Callable[[str], None] = get("delete_problem")
 """
 Submission
 """
+get_submissions: typing.Callable[[list[str]], list[dict]] = get("get_submissions")
 get_submission_ids: typing.Callable[[], typing.List[str]] = get("get_submission_ids")
 get_submission_filter: typing.Callable[[typing.Callable[[DBSubmissions], typing.Any]], list[DBSubmissions]] = \
     get("get_submission_filter")
@@ -115,6 +134,7 @@ update_submission: typing.Callable[[str, UpdateSubmissions], DBSubmissions] = ge
 """
 User
 """
+get_users: typing.Callable[[list[str]], list[dict]] = get("get_users")
 get_user_ids: typing.Callable[[], typing.List[str]] = get("get_user_ids")
 get_user_filter: typing.Callable[[typing.Callable[[DBUser], typing.Any]], list[DBUser]] = get("get_user_filter")
 get_user: typing.Callable[[str], DBUser] = get("get_user")
@@ -125,6 +145,7 @@ delete_user: typing.Callable[[str], None] = get("delete_user")
 """
 Role
 """
+get_roles: typing.Callable[[list[str]], list[dict]] = get("get_roles")
 get_role_ids: typing.Callable[[], typing.List[str]] = get("get_role_ids")
 get_role_filter: typing.Callable[[typing.Callable[[declare.Role], typing.Any]], list[declare.Role]] = \
     get("get_role_filter")
@@ -138,19 +159,23 @@ has_permission: typing.Callable[[DBUser, str], bool] = get("has_permission")
 """
 Redis queue
 """
-redis_client: redis_.Redis = None
+redis_client: redis_.asyncio.Redis = None
 queue_manager: redis.QueueManager = None
 
 
-def setup_redis():
+async def setup_redis():
     global redis_client, queue_manager
-    redis_client = redis_.Redis.from_url(utils.config.redis_server)
+    redis_client = redis_.asyncio.Redis.from_url(utils.config.redis_server)
     try:
-        redis_client.ping()  # noqa
+        await redis_client.ping()  # noqa
     except redis_.exceptions.ConnectionError as error:
-        logger.error(f'Failed to connect to Redis "{utils.config.redis_server}", details:')
-        logger.exception(error)
+        logger.error(f'Failed to connect to Redis "{utils.config.redis_server}"')
+        # logger.exception(error)
         logger.warning("You cant use judge service without Redis")
+        redis_client = None
+    except Exception as error:
+        logger.error(f'Failed to connect to Redis "{utils.config.redis_server}"')
+        logger.exception(error)
         redis_client = None
     else:
         queue_manager = redis.QueueManager(redis_client)

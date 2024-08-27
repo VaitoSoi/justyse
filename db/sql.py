@@ -49,7 +49,7 @@ from .exception import (
     LanguageNotAccept,
     CompilerNotSupport,
     RoleNotFound,
-    RoleAlreadyExist,
+    RoleAlreadyExists,
     PermissionDenied
 )
 
@@ -108,7 +108,9 @@ def get_problems(keys: list[str] = None) -> typing.List[dict]:
 
 
 def get_problem_ids() -> typing.List[str]:
-    return [item["id"] for item in get_problems()]
+    with Session(sql_engine) as session:
+        statement = select(SQLProblems.id)
+        return session.exec(statement).all()
 
 
 def get_problem_filter(
@@ -146,7 +148,7 @@ def get_problem(id: str, session: Session = None) -> DBProblems:
 def get_problem_docs(id: str) -> str:
     problem = get_problem(id)
     if not problem.description.startswith("docs:"):
-        return ProblemDocsNotFound(id)
+        raise ProblemDocsNotFound(id)
     return problem.description[5:]
 
 
@@ -275,6 +277,13 @@ Submission
 
 
 # GET
+def get_submissions(keys: list[str] = None) -> typing.List[dict]:
+    keys = keys or ["id"]
+    with Session(sql_engine) as session:
+        statement = select(SQLSubmissions)
+        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+
+
 def get_submission_ids() -> typing.List[str]:
     with Session(sql_engine) as session:
         statement = select(SQLSubmissions.id)
@@ -406,6 +415,13 @@ User
 
 
 # GET
+def get_users(keys: list[str] = None) -> typing.List[dict]:
+    keys = keys or ["id"]
+    with Session(sql_engine) as session:
+        statement = select(SQLUsers)
+        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+
+
 def get_user_ids() -> typing.List[str]:
     with Session(sql_engine) as session:
         statement = select(SQLUsers.id)
@@ -502,6 +518,13 @@ Role
 
 
 # GET
+def get_roles(keys: list[str] = None) -> typing.List[dict]:
+    keys = keys or ["id"]
+    with Session(sql_engine) as session:
+        statement = select(SQLRoles)
+        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+
+
 def get_role_ids() -> typing.List[str]:
     with Session(sql_engine) as session:
         statement = select(SQLRoles.id)
@@ -540,7 +563,7 @@ def get_role(id: str, session: Session = None) -> SQLRoles:
 # POST
 def add_role(role: Role):
     if role.id in get_role_ids():
-        raise RoleAlreadyExist(role.id)
+        raise RoleAlreadyExists(role.id)
 
     role = SQLRoles(**role.model_dump())
     res = copy.copy(role)

@@ -51,7 +51,7 @@ from .exception import (
     LanguageNotAccept,
     CompilerNotSupport,
     RoleNotFound,
-    RoleAlreadyExist,
+    RoleAlreadyExists,
     PermissionDenied,
     PermissionNotFound
 )
@@ -224,6 +224,11 @@ Submissions
 
 
 # GET
+def get_submissions(keys: list[str] = None) -> list[dict]:
+    keys = keys or ["id"]
+    return [{key: submission[key] for key in keys} for submission in read_json(submissions_json).values()]
+
+
 def get_submission_ids() -> typing.List[str]:
     return list(read_json(submissions_json).keys())
 
@@ -336,6 +341,11 @@ User
 
 
 # GET
+def get_users(keys: list[str] = None) -> list[str]:
+    keys = keys or ["id"]
+    return [{key: user[key] for key in keys} for user in read_json(users_json).values()]
+
+
 def get_user_ids() -> typing.List[str]:
     return list(read_json(users_json).keys())
 
@@ -417,6 +427,11 @@ Role
 
 
 # GET
+def get_roles(keys: list[str] = None) -> list[str]:
+    keys = keys or ["id"]
+    return [{key: role[key] for key in keys} for role in read_json(roles_json).values()]
+
+
 def get_role_ids() -> typing.List[str]:
     return list(read_json(roles_json).keys())
 
@@ -434,7 +449,7 @@ def get_role(id: str) -> typing.Optional[DBRole]:
 # POST
 def add_role(role: Role):
     if role.id in get_role_ids():
-        raise RoleAlreadyExist(role.id)
+        raise RoleAlreadyExists(role.id)
 
     roles = read_json(roles_json)
     roles[role.id] = role.model_dump()

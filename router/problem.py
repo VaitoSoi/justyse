@@ -14,7 +14,7 @@ logger.addHandler(utils.console_handler("Problem router"))
 
 
 # GET
-@problem_router.get("s/",
+@problem_router.get("s",
                     summary="Get all problems",
                     response_model=list[str | dict],
                     dependencies=[Depends(utils.has_permission("problem:views"))],
@@ -289,7 +289,7 @@ def get_problems_statics(to_file: bool = True, redirect: bool = True, download: 
 
 
 # POST
-@problem_router.post("/",
+@problem_router.post("",
                      summary="Add problem",
                      status_code=status.HTTP_201_CREATED,
                      response_model=db.DBProblems,

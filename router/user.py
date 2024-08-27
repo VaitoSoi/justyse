@@ -16,11 +16,11 @@ logger.addHandler(utils.console_handler("User router"))
 
 
 # GET
-@user_router.get("s/",
+@user_router.get("s",
                  summary="Get all users id",
                  response_model=list[str])
-def get_users():
-    return db.get_user_ids()
+def get_users(keys: typing.Optional[str] = None):
+    return db.get_user_ids() if keys is None else db.get_users(keys.split(","))
 
 
 @user_router.get("/me",
@@ -52,7 +52,7 @@ def get_user(id: str):
 
 
 # POST
-@user_router.post("/",
+@user_router.post("",
                   summary="Add user",
                   status_code=fastapi.status.HTTP_201_CREATED,
                   response_model=db.DBUser,

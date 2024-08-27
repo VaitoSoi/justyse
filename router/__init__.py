@@ -1,10 +1,11 @@
-from . import declare, judge, problem, submission, user, admin
+from . import declare, judge, problem, submission, user, admin, role
 from .declare import declare_router
 from .judge import judge_router, server_router, start as judge_start, stop as judge_stop
 from .problem import problem_router
 from .submission import submission_router
 from .user import user_router
 from .admin import admin_router, start as admin_start, inject as admin_inject
+from .role import role_router
 
 
 __all__ = [
@@ -24,5 +25,7 @@ __all__ = [
     "admin",
     "admin_router",
     "admin_start",
-    "admin_inject"
+    "admin_inject",
+    "role",
+    "role_router",
 ]
