@@ -14,7 +14,7 @@ logger.addHandler(utils.console_handler("Submission ro."))
 # GET
 @submission_router.get("s",
                        summary="Get all submissions",
-                       response_model=list[str],
+                       response_model=list[str | dict],
                        dependencies=[Depends(utils.has_permission("submission:views"))],
                        responses={
                            200: {
@@ -24,11 +24,71 @@ logger.addHandler(utils.console_handler("Submission ro."))
                                        "example": ["id1", "id2"]
                                    }
                                }
+                           },
+                           400: {
+                               "description": "Invalid filter",
+                               "content": {
+                                   "application/json": {
+                                       "example": {
+                                           "message": "Invalid filter",
+                                           "code": "invalid_filter",
+                                           "detail": {
+                                               "filter": "filter"
+                                           }
+                                       }
+                                   }
+                               }
                            }
                        })
-def submissions(keys: str | None = None):
+def submissions(keys: str | None = None, filter: str | None = None):
     try:
-        return db.get_submission_ids() if keys is None else db.get_submissions(keys.split(","))
+        if keys:
+            return db.get_submissions(keys.split(","))
+
+        elif filter:
+            filters = filter.split(",")
+
+            def filter_(submission: db.DBSubmissions | db.sql.SQLSubmissions):
+                conditions = []
+
+                for f in filters:
+                    item, value = f.split(":")
+
+                    if item == "problem":
+                        conditions.append(submission.problem == value)
+
+                    elif item == "lang":
+                        conditions.append(submission.lang == value)
+
+                    elif item == "compiler":
+                        conditions.append(submission.compiler == value)
+
+                    elif item == "by":
+                        conditions.append(submission.by == value)
+
+                    elif item == "code":
+                        conditions.append(submission.code == value)
+
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail={
+                                "message": "Invalid filter",
+                                "code": "invalid_filter",
+                                "detail": {
+                                    "filter": f
+                                }
+                            }
+                        )
+
+                    return db.operator.and_(*conditions)
+
+            res = [item.model_dump() for item in db.get_submission_filter(filter_)]
+
+            return utils.filter_keys(res, keys.split(',')) if keys else res
+
+        else:
+            return db.get_submission_ids()
 
     except Exception as error:
         logger.error(f'get submissions raise error, detail')

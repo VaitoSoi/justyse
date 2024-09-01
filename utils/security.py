@@ -8,6 +8,7 @@ import fastapi.security as security
 import jwt
 from passlib.hash import argon2, scrypt, sha256_crypt, sha512_crypt, bcrypt
 
+import db
 from . import exception
 from .config import config
 
@@ -172,6 +173,25 @@ def has_permission(permission: str, oauth_scheme: security.OAuth2PasswordBearer 
                     }
                 })
 
-        return True
+        return user
 
     return wrapper
+
+
+def viewable(
+        object,
+        user: db.DBUser,
+) -> bool:
+    if any(["@everyone" in object.roles] + [role in object.roles for role in user.roles]):
+        return True
+    else:
+        raise fastapi.HTTPException(
+            status_code=403,
+            detail={
+                "message": "Permission denied",
+                "code": "permission_denied",
+                "detail": {
+                    "missing": "view"
+                }
+            }
+        )

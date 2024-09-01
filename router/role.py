@@ -53,8 +53,7 @@ def get_role(id: str):
                   status_code=fastapi.status.HTTP_201_CREATED,
                   response_model=db.DBRole,
                   responses={
-                      201: {"description": "Success",
-                            "content": {"application/json": {"example": "created"}}},
+                      201: {"description": "Success", "model": db.DBRole},
                       409: {"description": "Role already exists",
                             "content": {"application/json": {"example": {"message": "Role already exists"}}}},
                       500: utils.InternalServerErrorResponse

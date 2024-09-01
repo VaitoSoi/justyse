@@ -1,5 +1,7 @@
-import typing
 import fnmatch
+import typing
+
+import pydantic
 
 
 def find(key: typing.Any, arr: typing.List[typing.Any]) -> int:
@@ -34,3 +36,11 @@ def getitem_pattern(data: dict, pattern: str) -> dict:
     Get items from the dictionary that match the pattern
     """
     return {key: value for key, value in data.items() if fnmatch.fnmatch(key, pattern)}
+
+
+def filter_keys(objs: list[dict], keys: list[str]) -> dict:
+    """
+    Filter the dictionary by keys
+    """
+    return [{key: value for key, value in (obj.model_dump() if isinstance(obj, pydantic.BaseModel) else obj).items()
+             if key in keys} for obj in objs]

@@ -38,6 +38,7 @@ class Problems(Indexable):
 
 
 class DBProblems(Problems):
+    by: str = sqlmodel.Field(foreign_key="users.id")
     dir: str
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
 
@@ -58,7 +59,6 @@ class SubmissionResult(Indexable):
 
 class Submissions(Indexable):
     __tablename__ = "submissions"
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     problem: str = sqlmodel.Field(foreign_key="problems.id")
     lang: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     compiler: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
@@ -66,6 +66,7 @@ class Submissions(Indexable):
 
 
 class DBSubmissions(Submissions):
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     by: str = sqlmodel.Field(foreign_key="users.id")
     dir: str = sqlmodel.Field(default=None)
     file_path: str = sqlmodel.Field(default=None)
@@ -80,13 +81,13 @@ class UpdateSubmissions(Submissions):
 
 class User(Indexable):
     __tablename__ = "users"
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str
     password: str = sqlmodel.Field(min_length=6, max_length=64)
     roles: typing.List[str] | None = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 class DBUser(User):
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
     password: str = sqlmodel.Field(min_length=None, max_length=None)
 
@@ -98,12 +99,12 @@ class UpdateUser(User):
 
 class Role(Indexable):
     __tablename__ = "roles"
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str
     permissions: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 class DBRole(Role):
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
 
 
@@ -149,6 +150,7 @@ problems_json = os.path.join(problems_dir, "problems.json")
 submissions_json = os.path.join(submissions_dir, "submissions.json")
 users_json = os.path.join(users_dir, "users.json")
 roles_json = os.path.join(users_dir, "roles.json")
+judges_dir = os.path.join(data, "judges")
 
 
 def unzip_testcases(problem: DBProblems, upfile: UploadFile, overwrite: bool = False):

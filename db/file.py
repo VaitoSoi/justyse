@@ -69,7 +69,7 @@ Problems
 # GET
 def get_problems(keys: list[str] = None) -> list[dict]:
     keys = keys or ["id"]
-    return [{key: problem[key] for key in keys} for problem in read_json(problems_json).values()]
+    return utils.filter_keys(read_json(problems_json), keys)
 
 
 def get_problem_ids() -> typing.List[str]:
@@ -181,7 +181,8 @@ def update_problem_docs(id: str, file: UploadFile):
     problem = get_problem(id)
 
     if not problem.description.startswith("docs:"):
-        raise ProblemDocsNotFound()
+        problem.description = f"docs:{uuid.uuid4()}"
+        update_problem(id, problem)
 
     with open(path.join(files_dir, problem['description'][5:]), "wb") as f:
         f.write(file.read())
@@ -343,7 +344,7 @@ User
 # GET
 def get_users(keys: list[str] = None) -> list[str]:
     keys = keys or ["id"]
-    return [{key: user[key] for key in keys} for user in read_json(users_json).values()]
+    return utils.filter_keys(read_json(users_json), keys)
 
 
 def get_user_ids() -> typing.List[str]:
@@ -429,7 +430,7 @@ Role
 # GET
 def get_roles(keys: list[str] = None) -> list[str]:
     keys = keys or ["id"]
-    return [{key: role[key] for key in keys} for role in read_json(roles_json).values()]
+    return utils.filter_keys(read_json(roles_json), keys)
 
 
 def get_role_ids() -> typing.List[str]:

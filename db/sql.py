@@ -37,7 +37,7 @@ from .exception import (
     TestTypeNotSupport,
     ProblemNotFound,
     ProblemAlreadyExisted,
-    ProblemDocsAlreadyExist,
+    # ProblemDocsAlreadyExist,
     ProblemDocsNotFound,
     InvalidProblemJudger,
     SubmissionNotFound,
@@ -89,7 +89,7 @@ def setup():
         f"sqlite:///:memory:"
         if utils.config.store_place == "sql:memory" else
         utils.config.store_place[4:],
-        # echo=True
+        echo=os.getenv("ENV", "PROD") == "DEBUG"
     )
     SQLModel.metadata.create_all(sql_engine)
 
@@ -104,7 +104,7 @@ def get_problems(keys: list[str] = None) -> typing.List[dict]:
     keys = keys or ["id"]
     with Session(sql_engine) as session:
         statement = select(SQLProblems)
-        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+        return utils.filter_keys(session.exec(statement).all(), keys)
 
 
 def get_problem_ids() -> typing.List[str]:
@@ -194,8 +194,8 @@ def add_problem(problem: Problems):
 def add_problem_docs(id: str, file: UploadFile):
     problem = get_problem(id)
 
-    if problem.description.startswith("docs:"):
-        raise ProblemDocsAlreadyExist(id)
+    # if problem.description.startswith("docs:"):
+    #     raise ProblemDocsAlreadyExist(id)
 
     file.filename = f"{uuid.uuid4().__str__()}.pdf"
     with open(f"{files_dir}/{file.filename}", "wb") as f:
@@ -233,8 +233,10 @@ def update_problem(id, problem_: typing.Union[DBProblems, UpdateProblems]):
 
 def update_problem_docs(id: str, file: UploadFile):
     problem = get_problem(id)
+
     if not problem.description.startswith("docs:"):
-        raise ProblemDocsNotFound(id)
+        problem.description = f"docs:{uuid.uuid4().__str__()}.pdf"
+        update_problem(id, problem)
 
     with open(os.path.join(files_dir, problem.description[5:]), "wb") as f:
         f.write(file.file.read())
@@ -281,7 +283,7 @@ def get_submissions(keys: list[str] = None) -> typing.List[dict]:
     keys = keys or ["id"]
     with Session(sql_engine) as session:
         statement = select(SQLSubmissions)
-        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+        return utils.filter_keys(session.exec(statement).all(), keys)
 
 
 def get_submission_ids() -> typing.List[str]:
@@ -419,7 +421,7 @@ def get_users(keys: list[str] = None) -> typing.List[dict]:
     keys = keys or ["id"]
     with Session(sql_engine) as session:
         statement = select(SQLUsers)
-        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+        return utils.filter_keys(session.exec(statement).all(), keys)
 
 
 def get_user_ids() -> typing.List[str]:
@@ -522,7 +524,7 @@ def get_roles(keys: list[str] = None) -> typing.List[dict]:
     keys = keys or ["id"]
     with Session(sql_engine) as session:
         statement = select(SQLRoles)
-        return [{key: item.model_dump()[key] for key in keys} for item in session.exec(statement).all()]
+        return utils.filter_keys(session.exec(statement).all(), keys)
 
 
 def get_role_ids() -> typing.List[str]:

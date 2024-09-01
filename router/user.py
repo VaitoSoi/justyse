@@ -107,6 +107,17 @@ def add_user(user: db.User, request: fastapi.Request):
 @user_router.post("/login",
                   summary="Login user",
                   responses={
+                      200: {
+                          "description": "Success",
+                          "content": {
+                              "application/json": {
+                                  "example": {
+                                      "access_token": "<token>",
+                                      "token_type": "bearer"
+                                  }
+                              }
+                          }
+                      },
                       400: {"description": "expires_delta too long",
                             "content": {"application/json": {"example": {"message": "expires_delta too long"}}}},
                       404: {"description": "User not found",
@@ -116,7 +127,7 @@ def add_user(user: db.User, request: fastapi.Request):
                   })
 def get_token(form_data: typing.Annotated[fastapi.security.OAuth2PasswordRequestForm, fastapi.Depends()],
               expires_delta: datetime.timedelta = datetime.timedelta(days=7)):
-    if expires_delta > datetime.timedelta(days=14):
+    if expires_delta > datetime.timedelta(days=30):
         raise fastapi.HTTPException(status_code=400, detail={"message": "expires_delta too long"})
     user = db.get_user_filter(lambda x: x.name == form_data.username)
     if len(user) == 0:
@@ -129,7 +140,7 @@ def get_token(form_data: typing.Annotated[fastapi.security.OAuth2PasswordRequest
         utils.signature,
         algorithm="HS256"
     )
-    return {"access_token": token, "token_type": "bearer"}
+    return {"access_token": token, "token_type": "bearer", **(user.model_dump())}
 
 
 @user_router.post("/refresh",
@@ -140,7 +151,7 @@ def get_token(form_data: typing.Annotated[fastapi.security.OAuth2PasswordRequest
                   })
 def refresh_token(token: str = fastapi.Depends(utils.oauth2_scheme),
                   expires_delta: datetime.timedelta = datetime.timedelta(days=7)):
-    if expires_delta > datetime.timedelta(days=14):
+    if expires_delta > datetime.timedelta(days=30):
         raise fastapi.HTTPException(status_code=400, detail={"message": "expires_delta too long"})
     decoded = utils.decode_jwt(token, verify_exp=False)
     user = db.get_user(decoded["user"])

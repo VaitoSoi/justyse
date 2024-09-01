@@ -17,7 +17,7 @@ logger.addHandler(utils.console_handler("Problem router"))
 @problem_router.get("s",
                     summary="Get all problems",
                     response_model=list[str | dict],
-                    dependencies=[Depends(utils.has_permission("problem:views"))],
+                    # dependencies=[],
                     responses={
                         200: {
                             "description": "Success",
@@ -43,9 +43,72 @@ logger.addHandler(utils.console_handler("Problem router"))
                             }
                         },
                     })
-def get_problems(keys: str | None = None):
+def get_problems(
+        keys: str | None = None,
+        filter: str | None = None,
+        user: db.DBUser = Depends(utils.has_permission("problem:views"))
+):
     try:
-        return db.get_problem_ids() if keys is None else db.get_problems(keys.split(','))
+        if filter:
+            filters = filter.split(",")
+
+            def filter_(problem: db.DBProblems | db.sql.SQLProblems):
+                conditions = [db.operator.or_(db.operator.contain(problem.roles, "@everyone"),
+                                              *[db.operator.contain(problem.roles, role) for role in user.roles])]
+
+                for f in filters:
+                    item, value = f.split(":")
+                    if item == "id":
+                        conditions.append(problem.id == value)
+                    elif item == "title":
+                        conditions.append(problem.title == value)
+                    # elif item == "description":
+                    #     conditions.append(problem.description == value)
+                    elif item == "total_testcases":
+                        conditions.append(problem.total_testcases == int(value))
+                    elif item == "test_type":
+                        conditions.append(problem.test_type == value)
+                    elif item == "test_name":
+                        conditions.append(problem.test_name == value.split(';'))
+                    elif item == "accept_language":
+                        conditions.append(problem.accept_language == value.split(';'))
+                    # elif item == "limit":
+                    #     conditions.append(problem.limit == value)
+                    # elif item == "mode":
+                    #     conditions.append(problem.mode == value)
+                    elif item == "point_per_testcase":
+                        conditions.append(problem.point_per_testcase == float(value))
+                    # elif item == "judger":
+                    #     conditions.append(problem.judger == value)
+                    elif item == "roles":
+                        conditions.append(problem.roles == value.split(';'))
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail={
+                                "message": "Invalid filter",
+                                "code": "invalid_filter",
+                                "detail": {
+                                    "filter": filter
+                                }
+                            }
+                        )
+
+                return db.operator.and_(*conditions)
+
+            res = [item.model_dump() for item in db.get_problem_filter(filter_)]
+
+            return utils.filter_keys(res, keys.split(',')) if keys else res
+
+        else:
+            def filter_(problem: db.DBProblems | db.sql.SQLProblems):
+                return [db.operator.or_(db.operator.contain(problem.roles, "@everyone"),
+                                        *[db.operator.contain(problem.roles, role) for role in user.roles])]
+            if keys:
+                return utils.filter_keys(db.get_problem_filter(filter_), keys.split(','))
+
+            else:
+                return [item["id"] for item in utils.filter_keys(db.get_problem_filter(filter_), ["id"])]
 
     except KeyError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -72,6 +135,7 @@ def get_problems(keys: str | None = None):
 @problem_router.get("/{id}",
                     summary="Get problem by id",
                     response_model=db.DBProblems,
+                    # dependencies=[Depends(utils.has_permission("problem:view"))],
                     responses={
                         200: {
                             "description": "Success",
@@ -87,18 +151,22 @@ def get_problems(keys: str | None = None):
                                     }
                                 }
                             }
-                        }
-                    },
-                    dependencies=[Depends(utils.has_permission("problem:view"))])
-def get_problem(id: str):
+                        },
+                    })
+def get_problem(id: str, user: db.DBUser = Depends(utils.has_permission("problem:view"))):
     try:
-        return db.get_problem(id)
+        problem = db.get_problem(id)
+        utils.viewable(problem, user)
+        return problem
 
     except db.exception.ProblemNotFound:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": "Problem not found", "code": "problem_not_found"}
         )
+
+    except HTTPException as error:
+        raise error
 
     except Exception as error:
         logger.error(f'get problem {id} raise error, detail')
@@ -108,7 +176,7 @@ def get_problem(id: str):
 
 @problem_router.get("/{id}/docs",
                     summary="Get problem docs by id",
-                    dependencies=[Depends(utils.has_permission("problem:view"))],
+                    # dependencies=[Depends(utils.has_permission("problem:view"))],
                     responses={
                         404: {
                             "description": "Problem or Problem docs not found",
@@ -134,8 +202,9 @@ def get_problem(id: str):
                             }
                         }
                     })
-def get_problem_docs(id: str, redirect: bool = True):
+def get_problem_docs(id: str, redirect: bool = True, user: db.DBUser = Depends(utils.has_permission("problem:view"))):
     try:
+        utils.viewable(db.get_problem(id), user)
         docs = db.get_problem_docs(id)
         if redirect:
             return RedirectResponse(url=f"/file/{docs}")
@@ -153,6 +222,9 @@ def get_problem_docs(id: str, redirect: bool = True):
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": "Problem docs not found", "code": "problem_docs_not_found"}
         )
+
+    except HTTPException as error:
+        raise error
 
     except Exception as error:
         logger.error(f'get problem docs {id} raise error, detail')
@@ -181,8 +253,13 @@ def get_problem_docs(id: str, redirect: bool = True):
                             }
                         }
                     })
-def get_problem_statics(id: str, to_file: bool = True, redirect: bool = True, download: bool = False):
+def get_problem_statics(id: str,
+                        to_file: bool = False,
+                        redirect: bool = False,
+                        download: bool = False,
+                        user: db.DBUser = Depends(utils.has_permission("problem:view"))):
     try:
+        utils.viewable(db.get_problem(id), user)
         statics = []
         for uid in db.get_user_ids():
             submissions = db.get_submission_filter(
@@ -220,6 +297,9 @@ def get_problem_statics(id: str, to_file: bool = True, redirect: bool = True, do
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"message": "Problem not found", "code": "problem_not_found"}
         )
+
+    except HTTPException as error:
+        raise error
 
     except Exception as error:
         logger.error(f'get problem statics {id} raise error, detail')
@@ -550,6 +630,25 @@ def add_problem_testcases(id: str, file: UploadFile):
                                   }
                               }
                           },
+                          400: {
+                              "description": "Invalid testcase extension",
+                              "content": {
+                                  "application/json": {
+                                      "examples": {
+                                          "Invalid testcase extension": {
+                                              "message": "Invalid testcase extension",
+                                              "code": "invalid_testcase_extension"
+                                          },
+                                          "Invalid testcase count": {
+                                              "message": "Invalid testcase count, "
+                                                         "expected {expected_inp} inp(s) and out(s), "
+                                                         "got {got_inp} inp(s), {got_out} out(s)",
+                                              "code": "invalid_testcase_count"
+                                          }
+                                      }
+                                  }
+                              }
+                          },
                           304: {
                               "description": "Nothing to update",
                               "content": {
@@ -566,13 +665,29 @@ def problem_update(id: str, problem: db.UpdateProblems):
         return db.update_problem(id, problem)
 
     except db.exception.ProblemNotFound:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": "Problem not found", "code": "problem_not_found"}
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={
+            "message": "Problem not found",
+            "code": "problem_not_found"
+        })
 
-    except db.exception.NothingToUpdate:
-        raise HTTPException(status_code=status.HTTP_304_NOT_MODIFIED, detail={"message": "Nothing to update"})
+    except db.exception.ProblemTestcaseAlreadyExist:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "message": "Problem testcase already exists",
+            "code": "problem_testcase_already_exists"
+        })
+
+    except db.exception.InvalidTestcaseExtension:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={
+            "message": "Invalid testcase extension",
+            "code": "invalid_testcase_ext"
+        })
+
+    except db.exception.InvalidTestcaseCount as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={
+            "message": f"Invalid testcase count, expected {error.args[0]} inp(s) and out(s), "
+                       f"got {error.args[1][1]} inp(s), {error.args[1][1]} out(s)",
+            "code": "invalid_testcase_count"
+        })
 
     except Exception as error:
         logger.error(f'update problem {id} raise error, detail')

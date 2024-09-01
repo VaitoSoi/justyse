@@ -10,14 +10,12 @@ def read(file: str) -> typing.Optional[str]:
 
 
 def read_json(file: str) -> typing.Dict[str, typing.Any]:
-    with open(file, "r") as f:
-        return json.load(f)
+    return json.load(open(file, "r"))
 
 
 def write(file: str, data: str) -> None:
-    with open(file, "w") as f:
-        f.write(data)
+    return open(file, "w").write(data)
 
 
 def write_json(file: str, data: typing.Dict[str, typing.Any]) -> None:
-    write(file, json.dumps(data, indent=4, ensure_ascii=False))
+    return write(file, json.dumps(data, indent=4, ensure_ascii=False))

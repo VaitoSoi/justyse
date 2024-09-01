@@ -3,10 +3,9 @@ import logging
 import os
 
 import fastapi
-import uvicorn
-import uvicorn.logging
-from fastapi import FastAPI, APIRouter
 import fastapi.logger
+import uvicorn.logging
+from fastapi import FastAPI, APIRouter, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -58,7 +57,7 @@ async def lifespan(*args):
     db.setup()
     await db.setup_redis()
     if db.redis_client:
-        await db.redis_client.delete("admin") # noqa
+        await db.redis_client.delete("admin")  # noqa
 
     admin_start(*args)
     admin_inject()
@@ -81,7 +80,6 @@ api_router.include_router(server_router)
 api_router.include_router(user_router)
 api_router.include_router(admin_router)
 api_router.include_router(role_router)
-
 
 app = FastAPI(
     lifespan=lifespan,
@@ -148,7 +146,7 @@ app.include_router(api_router)
 
 
 @app.exception_handler(fastapi.HTTPException)
-async def http_exception_handler(request: fastapi.Request, exc):
+async def http_exception_handler(request: Request, exc):
     return fastapi.responses.JSONResponse(
         status_code=exc.status_code,
         content=exc.detail,
@@ -162,6 +160,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# @app.middleware("http")
+# async def cors_handler(request: Request, call_next):
+#     response: Response = await call_next(request)
+#     response.headers['Access-Control-Allow-Credentials'] = 'true'
+#     response.headers['Access-Control-Allow-Origin'] = os.environ.get('allowedOrigins')
+#     response.headers['Access-Control-Allow-Methods'] = '*'
+#     response.headers['Access-Control-Allow-Headers'] = '*'
+#     return response
 
 """
 Static files
