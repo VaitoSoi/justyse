@@ -18,7 +18,6 @@ __all__ = [
     "UserNotFound",
     "NotConnected",
     "ResultNotFound",
-    "ResultAlreadyExist",
 ]
 
 
@@ -79,6 +78,14 @@ class SubmissionNotFound(NotFound):
 
 
 class SubmissionAlreadyExist(AlreadyExist):
+    pass
+
+
+class SubmissionLogNotFound(NotFound):
+    pass
+
+
+class SubmissionLogAlreadyExist(AlreadyExist):
     pass
 
 

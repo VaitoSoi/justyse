@@ -2,11 +2,12 @@
 For file system-stored type
 """
 
+import ast
+import json
 import os
 import os.path as path
 import typing
 import uuid
-import ast
 
 from fastapi import UploadFile
 
@@ -28,6 +29,7 @@ from .declare import (
     Submissions,
     DBSubmissions,
     UpdateSubmissions,
+    SubmissionLog,
     User,
     DBUser,
     UpdateUser,
@@ -53,7 +55,9 @@ from .exception import (
     RoleNotFound,
     RoleAlreadyExists,
     PermissionDenied,
-    PermissionNotFound
+    PermissionNotFound,
+    SubmissionLogNotFound,
+    SubmissionLogAlreadyExist
 )
 
 
@@ -84,7 +88,7 @@ def get_problem_filter(func: typing.Callable[[DBProblems], bool]) -> list[DBProb
 def get_problem(id) -> DBProblems:
     if id not in get_problem_ids():
         raise ProblemNotFound()
-    return Problems(**read_json(problems_json)[id])
+    return DBProblems(**read_json(problems_json)[id])
 
 
 def get_problem_docs(id: str) -> str:
@@ -95,13 +99,15 @@ def get_problem_docs(id: str) -> str:
 
 
 # POST
-def add_problem(problem: Problems):
-    problems = read_json(problems_json)
-    if problem.id in problem:
+def add_problem(problem: Problems, creator: DBUser):
+    if problem.id in get_problem_ids():
         raise ProblemAlreadyExisted(problem.id)
 
-    problem = DBProblems(**problem.model_dump())
-    problem.dir = gen_path(problem.id)
+    problem = DBProblems(**{
+        **problem.model_dump(),
+        "by": creator.id,
+        "dir": gen_path(problem.id)
+    })
     try:
         os.makedirs(problem.dir, exist_ok=False)
     except OSError:
@@ -113,8 +119,9 @@ def add_problem(problem: Problems):
             ast.parse(problem.judger)
         except SyntaxError:
             raise InvalidProblemJudger()
-        with open(path.join(problem.dir, "judger.py"), "w") as f:
+        with open(os.path.join(problem.dir, "judger.py"), "w") as f:
             f.write(problem.judger)
+        problem.judger = None
 
     if problem.test_type not in ["file", "std"]:
         raise TestTypeNotSupport()
@@ -124,6 +131,7 @@ def add_problem(problem: Problems):
         if lang not in support_language:
             raise LanguageNotSupport(lang)
 
+    problems = read_json(problems_json)
     problems[problem.id] = problem.model_dump()
     write_json(problems_json, problems)
 
@@ -132,8 +140,6 @@ def add_problem(problem: Problems):
 
 def add_problem_docs(id: str, file: UploadFile):
     problem = get_problem(id)
-    if problem is None:
-        raise ProblemNotFound(id)
     if problem.description.startswith("docs:"):
         raise ProblemDocsAlreadyExist(problem.id)
 
@@ -142,9 +148,8 @@ def add_problem_docs(id: str, file: UploadFile):
         f.write(file.file.read())
     file.file.close()
 
-    problems = read_json(problems_json)
-    problems[problem["id"]]["description"] = f"docs:{file.filename}"
-    write_json(problems_json, problems)
+    problem.description = f"docs:{file.filename}"
+    update_problem(id, problem)
 
 
 def add_problem_testcases(id: str, upfile: UploadFile):
@@ -195,18 +200,6 @@ def update_problem_testcases(id: str, upfile: UploadFile):
     unzip_testcases(problem, upfile, True)
 
 
-# def update_problem_judger(id: str, code: str):
-#     problem = get_problem(id)
-#
-#     try:
-#         ast.parse(code)
-#     except SyntaxError:
-#         raise InvalidProblemJudger()
-#
-#     with open(os.path.join(problem.dir, "judger.py"), "w") as f:
-#         f.write(code)
-
-
 # DELETE
 def delete_problem(id: str):
     problems = read_json(problems_json)
@@ -227,7 +220,7 @@ Submissions
 # GET
 def get_submissions(keys: list[str] = None) -> list[dict]:
     keys = keys or ["id"]
-    return [{key: submission[key] for key in keys} for submission in read_json(submissions_json).values()]
+    return utils.filter_keys(read_json(submissions_json).values(), keys)
 
 
 def get_submission_ids() -> typing.List[str]:
@@ -239,10 +232,10 @@ def get_submission_filter(func: typing.Callable[[DBSubmissions], bool]) -> list[
     return [DBSubmissions(**v) for k, v in submissions.items() if func(DBSubmissions(**v))]
 
 
-def get_submission(id: str) -> typing.Optional[Submissions]:
+def get_submission(id: str) -> typing.Optional[DBSubmissions]:
     if id not in get_submission_ids():
         raise SubmissionNotFound(id)
-    return Submissions(**read_json(submissions_json)[id])
+    return DBSubmissions(**read_json(submissions_json)[id])
 
 
 # def get_submission_status(id: str) -> SubmissionResult:
@@ -257,11 +250,13 @@ def add_submission(submission: Submissions, submitter: DBUser):
     if submission.id in get_submission_ids():
         raise SubmissionAlreadyExist(submission.id)
 
-    submission = DBSubmissions(**submission.model_dump())
-    submission["by"] = submitter.id
-    submission["dir"] = path.join(submissions_dir, submission['id'])
-    submission["file_path"] = path.join(submission["dir"],
-                                        declare.Language[submission["lang"][0]].file.format(id=submission["id"]))
+    submission = DBSubmissions(**{
+        **submission.model_dump(),
+        "by": submitter.id,
+        "dir": path.join(submissions_dir, submission.id),
+        "file_path": path.join(submissions_dir, submission.id,
+                               declare.Language[submission.lang[0]].file.format(id=submission.id))
+    })
 
     problem = get_problem(submission["problem"])
     if (
@@ -280,12 +275,13 @@ def add_submission(submission: Submissions, submitter: DBUser):
         raise CompilerNotSupport(utils.padding(submission.compiler, 2))
 
     os.makedirs(submission["dir"], exist_ok=True)
+    os.makedirs(path.join(submission["dir"], "logs"), exist_ok=True)
     with open(submission["file_path"], "w") as file:
         file.write(submission["code"])
     submission.code = ""
 
     submissions = read_json(submissions_json)
-    submissions[submission["id"]] = submission
+    submissions[submission["id"]] = submission.model_dump()
     write_json(submissions_json, submissions)
 
     return submission
@@ -315,6 +311,7 @@ def update_submission(id: str, submission: UpdateSubmissions):
 
 
 # OTHER :D
+
 # def dump_result(id: str, results: list[declare.JudgeResult]):
 #     if id.startswith("judge::"):
 #         id = id[7:]
@@ -334,6 +331,35 @@ def update_submission(id: str, submission: UpdateSubmissions):
 #     if not path.exists(f"{submission['dir']}/result/{queue_id}.json"):
 #         raise ResultNotFound(f"{submission['dir']}/result/{queue_id}.json")
 #     return utils.read_json(f"{submission['dir']}/result/{queue_id}.json")
+
+def get_log_ids(submission_id: str) -> typing.List[str]:
+    submission = get_submission(submission_id)
+    return [f for f in os.listdir(path.join(submission.dir, "logs")) if f.endswith(".json")]
+
+
+def dump_logs(submission_id: str, id: str, logs: str):
+    if id in get_log_ids(submission_id):
+        raise SubmissionLogAlreadyExist(id)
+
+    log = SubmissionLog(
+        id=id,
+        submission=submission_id,
+        logs=logs
+    )
+    submission = get_submission(submission_id)
+    print("dumping")
+    with open(f"{submission.dir}/logs/{id}.json", "w") as f:
+        print("opened file")
+        f.write(log.model_dump_json(indent=4))
+    print("dumped")
+
+
+def get_logs(submission_id: str, id: str) -> SubmissionLog:
+    submission = get_submission(submission_id)
+    if id not in get_log_ids(submission_id):
+        raise SubmissionLogNotFound(id)
+    with open(f"{submission.dir}/logs/{id}.json", "r") as f:
+        return SubmissionLog(**json.load(f))
 
 
 """
@@ -358,7 +384,12 @@ def get_user_filter(func: typing.Callable[[DBUser], bool]) -> list[DBUser]:
 def get_user(id: str) -> typing.Optional[DBUser]:
     if id not in get_user_ids():
         raise UserNotFound(id)
-    return DBUser(**read_json(users_json)[id])
+    user = DBUser(**read_json(users_json)[id])
+    permission = set()
+    for role in user.roles:
+        permission.update(get_role(role).permissions)
+    user.permissions = list(permission)
+    return user
 
 
 # POST
@@ -369,8 +400,8 @@ def add_user(user: User, creator: DBUser | str | None = None):
     if isinstance(creator, str) and creator == "@system@":
         pass
 
-    elif not user.roles or not creator:
-        user.roles = ["@default"]
+    elif creator is None and user.roles == ["@everyone"]:
+        pass
 
     else:
         roles = [get_role(role) for role in user.roles]

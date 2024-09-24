@@ -11,7 +11,7 @@ import utils
 admin_router = fastapi.APIRouter(
     prefix="/admin",
     tags=["admin"],
-    dependencies=[fastapi.Depends(utils.security.has_permission("admin"))]
+    dependencies=[fastapi.Depends(utils.security.has_permission("@admin"))]
 )
 # logger: logging.Logger = None
 logger = logging.getLogger("justyse.router.admin")
@@ -22,10 +22,16 @@ injected: list[str] = []
 
 
 class InjectHandler(logging.Handler):
+    loop: asyncio.AbstractEventLoop
+
+    def __init__(self, *args, **kwargs):
+        self.loop = kwargs.get("loop", asyncio.get_running_loop())
+        super().__init__()
+
     def emit(self, record: logging.LogRecord):
         msg = self.format(record)
         msg = click.unstyle(msg)
-        asyncio.run_coroutine_threadsafe(queue.put(msg, True), asyncio.get_running_loop())
+        asyncio.run_coroutine_threadsafe(queue.put(msg, True, False), self.loop)
         # print("putted", msg)
 
 
@@ -50,7 +56,7 @@ def inject():
 
     for name in non_injected:
         logger_ = logging.getLogger(name)
-        handler_ = InjectHandler()
+        handler_ = InjectHandler(loop=asyncio.get_running_loop())
         if logger_.handlers:
             handler_.setFormatter(logger_.handlers[-1].formatter)
         logger_.addHandler(handler_)

@@ -305,8 +305,8 @@ class JudgeClient:
             if response[0] == 'judge.write:testcase':
                 if response[1].get("status") != 0:
                     raise exception.TestcaseWriteError(response[1].get("error", None))
-                if response[1].get("index") != i:
-                    raise exception.TestcaseMismatchError(f"Expect {i}, got {response[1].get('index')}")
+                # if response[1].get("index") != i:
+                #     raise exception.TestcaseMismatchError(f"Expect {i}, got {response[1].get('index')}")
 
             self._debug.append(f"written:testcase {i}")
 

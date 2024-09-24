@@ -18,9 +18,13 @@ logger.addHandler(utils.console_handler("User router"))
 # GET
 @user_router.get("s",
                  summary="Get all users id",
-                 response_model=list[str])
-def get_users(keys: typing.Optional[str] = None):
-    return db.get_user_ids() if keys is None else db.get_users(keys.split(","))
+                 response_model=list[str | dict])
+def get_users(user: typing.Annotated[db.DBUser, fastapi.Depends(utils.has_permission("users:view"))],
+              keys: typing.Optional[str] = None):
+    keys = keys.split(",") if keys is not None else ["id"]
+    if "password" in keys and "@admin" not in user.roles:
+        keys.pop(keys.index("password"))
+    return db.get_users(keys)
 
 
 @user_router.get("/me",
@@ -38,7 +42,8 @@ def get_me(me: typing.Annotated[db.DBUser, fastapi.Depends(utils.get_user())]):
                            "model": db.DBUser},
                      404: {"description": "User not found",
                            "content": {"application/json": {"example": {"message": "User not found"}}}}
-                 })
+                 },
+                 dependencies=[fastapi.Depends(utils.has_permission("user:view"))])
 def get_user(id: str):
     try:
         return db.get_user(id)
@@ -63,12 +68,10 @@ def get_user(id: str):
                             "content": {"application/json": {"example": {"message": "User already exist"}}}}
 
                   })
-def add_user(user: db.User, request: fastapi.Request):
-    creator: db.DBUser = db.declare.DefaultUser
-    auth = request.headers.get("Authorization")
-    if auth:
-        creator = utils.get_user(auth.split(" ")[1])
-
+def add_user(user: db.User, creator: typing.Annotated[
+    db.DBUser | None,
+    fastapi.Depends(utils.has_permission("user:add", utils.optional_oauth2_scheme))
+]):
     try:
         return db.add_user(user, creator)
 
@@ -118,23 +121,59 @@ def add_user(user: db.User, request: fastapi.Request):
                               }
                           }
                       },
-                      400: {"description": "expires_delta too long",
-                            "content": {"application/json": {"example": {"message": "expires_delta too long"}}}},
-                      404: {"description": "User not found",
-                            "content": {"application/json": {"example": {"message": "User not found"}}}},
-                      401: {"description": "Password incorrect",
-                            "content": {"application/json": {"example": {"message": "Password incorrect"}}}}
+                      400: {
+                          "description": "expires_delta too long",
+                          "content": {
+                              "application/json": {
+                                  "example": {
+                                      "message": "Expires_delta too long",
+                                      "code": "expires_delta_too_long"
+                                  }
+                              }
+                          }
+                      },
+                      404: {
+                          "description": "User not found",
+                          "content": {
+                              "application/json": {
+                                  "example": {
+                                      "message": "User not found",
+                                      "code": "user_not_found"
+                                  }
+                              }
+                          }
+                      },
+                      401: {
+                          "description": "Password incorrect",
+                          "content": {
+                              "application/json": {
+                                  "example": {
+                                      "message": "Password incorrect",
+                                      "code": "password_incorrect"
+                                  }
+                              }
+                          }
+                      }
                   })
 def get_token(form_data: typing.Annotated[fastapi.security.OAuth2PasswordRequestForm, fastapi.Depends()],
               expires_delta: datetime.timedelta = datetime.timedelta(days=7)):
     if expires_delta > datetime.timedelta(days=30):
-        raise fastapi.HTTPException(status_code=400, detail={"message": "expires_delta too long"})
+        raise fastapi.HTTPException(status_code=400, detail={
+            "message": "Expires_delta too long",
+            "code": "expires_delta_too_long"
+        })
     user = db.get_user_filter(lambda x: x.name == form_data.username)
     if len(user) == 0:
-        raise fastapi.HTTPException(status_code=404, detail={"message": "User not found"})
+        raise fastapi.HTTPException(status_code=404, detail={
+            "message": "User not found",
+            "code": "user_not_found"
+        })
     user = user[0]
     if not utils.check_hash(form_data.password, user.password):
-        raise fastapi.HTTPException(status_code=401, detail={"message": "Password incorrect"})
+        raise fastapi.HTTPException(status_code=401, detail={
+            "message": "Password incorrect",
+            "code": "password_incorrect"
+        })
     token = jwt.encode(
         {"user": user.id, "exp": datetime.datetime.now() + expires_delta},
         utils.signature,
@@ -169,7 +208,8 @@ def refresh_token(token: str = fastapi.Depends(utils.oauth2_scheme),
                    responses={
                        404: {"description": "User not found",
                              "content": {"application/json": {"example": {"message": "User not found"}}}}
-                   })
+                   },
+                   dependencies=[fastapi.Depends(utils.has_permission("user:edit"))])
 def update_user(id: str, user: db.User):
     try:
         db.update_user(id, user)
@@ -186,7 +226,8 @@ def update_user(id: str, user: db.User):
                     responses={
                         404: {"description": "User not found",
                               "content": {"application/json": {"example": {"message": "User not found"}}}}
-                    })
+                    },
+                    dependencies=[fastapi.Depends(utils.has_permission("user:delete"))])
 def delete_user(id: str):
     try:
         db.delete_user(id)

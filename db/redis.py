@@ -1,7 +1,6 @@
 import json
 import typing
 import logging
-import utils
 
 import asyncio
 import redis.asyncio as redis
@@ -16,12 +15,12 @@ class RedisQueue:
     events: dict[
         typing.Literal['get', 'put', 'close', 'get_all'],
         # list[tuple[typing.Callable, asyncio.AbstractEventLoop]]
-        list[typing.Callable]
+        dict[str, typing.Callable]
     ] = {
         # 'get': [],
         # 'get_all': [],
-        'put': [],
-        'close': [],
+        'put': {},
+        'close': {},
     }
     logger: logging.Logger
 
@@ -36,36 +35,42 @@ class RedisQueue:
 
     def on(self, event: typing.Literal['get', 'put']):
         def warper(func: typing.Callable):
+            id_ = id(func)
             if not self.closed:
-                self.events[event].append(func)
-            return func
+                self.events[event][id_] = func
+            return id_
 
         return warper
 
-    def off(self, event: typing.Literal['put', 'close']):
+    def off(self, key: str):
+        for event in self.events.keys():
+            if key in self.events[event]:
+                self.events[event].pop(key)
+                break
+
+    def off_(self, event: typing.Literal['put', 'close']):
         self.events[event].clear()
 
     def offs(self):
         for key in self.events.keys():
-            self.off(key)
+            self.off_(key)
 
     async def emit(self, event: typing.Literal['put', 'close'], *args, **kwargs):
         if self.closed:
             return
 
-        # self.logger.debug(f"emit {event}, {args}, {kwargs}")
-
-        for func in self.events[event]:
+        for func in self.events[event].values():
             if asyncio.iscoroutinefunction(func):
                 await func(*args, **kwargs)
             else:
                 func(*args, **kwargs)
 
-    async def put(self, item: typing.Any, non_event: bool = False):
-        try:
-            item = json.dumps(item)
-        except (TypeError, json.JSONDecodeError):
-            pass
+    async def put(self, item: typing.Any, non_event: bool = False, json_decode: bool = True):
+        if json_decode:
+            try:
+                item = json.dumps(item)
+            except (TypeError, json.JSONDecodeError):
+                pass
 
         await self.client.rpush(self.name, item)
         if not non_event:
@@ -86,6 +91,11 @@ class RedisQueue:
         except (TypeError, json.JSONDecodeError):
             pass
         return items
+
+    async def write_log(self, submission_id: str):
+        import db
+
+        return await asyncio.to_thread(db.dump_logs, submission_id, self.name, await self.get_all())
 
     async def close(self, non_event: bool = False):
         if not non_event:

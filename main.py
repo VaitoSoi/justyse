@@ -4,8 +4,8 @@ import os
 
 import fastapi
 import fastapi.logger
-import uvicorn.logging
-from fastapi import FastAPI, APIRouter, Request, Response
+import uvicorn
+from fastapi import FastAPI, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -33,7 +33,7 @@ Lifespan
 
 # print("\n".join(list(logging.root.manager.loggerDict.keys())))
 justyse_logger = logging.getLogger("justyse")
-justyse_logger.setLevel(os.getenv("LOG_LEVEL", "DEBUG"))
+justyse_logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 justyse_logger.propagate = False
 
 uvicorn_logger = logging.getLogger("uvicorn")
@@ -61,7 +61,7 @@ async def lifespan(*args):
 
     admin_start(*args)
     admin_inject()
-    await judge_start(threading_manager)
+    await judge_start(*args)
 
     yield
 

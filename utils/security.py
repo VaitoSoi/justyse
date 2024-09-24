@@ -8,7 +8,6 @@ import fastapi.security as security
 import jwt
 from passlib.hash import argon2, scrypt, sha256_crypt, sha512_crypt, bcrypt
 
-import db
 from . import exception
 from .config import config
 
@@ -103,7 +102,6 @@ def decode_jwt(token: str, verify_exp: bool = True) -> dict:
 
 
 def get_user_id(oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> dict:
-
     def wrapper(token: typing.Annotated[str, fastapi.Depends(oauth_scheme)]):
         try:
             decoded = decode_jwt(token)
@@ -136,7 +134,15 @@ def get_user_id(oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> 
                 }
             )
 
-    return wrapper
+    def optional_wrapper(token: typing.Optional[str] = fastapi.Depends(oauth_scheme)):
+        try:
+            decoded = decode_jwt(token)
+            return decoded["user"] if decoded and "user" in decoded else None
+
+        except Exception:
+            return None
+
+    return wrapper if oauth_scheme.auto_error is True else optional_wrapper
 
 
 def get_user(oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> dict:
@@ -147,22 +153,39 @@ def get_user(oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> dic
             return db.get_user(user_id)
 
         except db.exception.UserNotFound:
-            raise fastapi.HTTPException(
-                status_code=404,
-                detail={
-                    "message": "User not found",
-                    "code": "user_not_found"
-                }
-            )
+            if oauth_scheme.auto_error is True:
+                raise fastapi.HTTPException(
+                    status_code=404,
+                    detail={
+                        "message": "User not found",
+                        "code": "user_not_found"
+                    }
+                )
 
     return wrapper
 
 
-def has_permission(permission: str, oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> bool:
+def has_permission(permission: str,
+                   oauth_scheme: security.OAuth2PasswordBearer = oauth2_scheme) -> bool:
     import db
 
-    def wrapper(user: typing.Annotated[db.declare.DBUser, fastapi.Depends(get_user(oauth_scheme))]):
-        if db.has_permission(user, permission) is not True:
+    def wrapper(user: typing.Annotated[db.DBUser, fastapi.Depends(get_user(oauth_scheme))]):
+        if not user:
+            if oauth_scheme.auto_error is True:
+                raise fastapi.HTTPException(
+                    status_code=401,
+                    detail={
+                        "message": "User not found",
+                        "code": "user_not_found"
+                    }
+                )
+            else:
+                return None
+
+        if db.has_permission(user, permission) is True:
+            return user
+
+        if oauth_scheme.auto_error is True:
             raise fastapi.HTTPException(
                 status_code=403,
                 detail={
@@ -172,15 +195,15 @@ def has_permission(permission: str, oauth_scheme: security.OAuth2PasswordBearer 
                         "missing": permission
                     }
                 })
-
-        return user
+        else:
+            return None
 
     return wrapper
 
 
 def viewable(
         object,
-        user: db.DBUser,
+        user,
 ) -> bool:
     if any(["@everyone" in object.roles] + [role in object.roles for role in user.roles]):
         return True

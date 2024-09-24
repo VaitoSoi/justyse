@@ -46,7 +46,7 @@ logger.addHandler(utils.console_handler("Problem router"))
 def get_problems(
         keys: str | None = None,
         filter: str | None = None,
-        user: db.DBUser = Depends(utils.has_permission("problem:views"))
+        user: db.DBUser = Depends(utils.has_permission("problems:view"))
 ):
     try:
         if filter:
@@ -94,7 +94,7 @@ def get_problems(
                             }
                         )
 
-                return db.operator.and_(*conditions)
+                return conditions[0] if len(conditions) == 1 else db.operator.and_(*conditions)
 
             res = [item.model_dump() for item in db.get_problem_filter(filter_)]
 
@@ -102,8 +102,9 @@ def get_problems(
 
         else:
             def filter_(problem: db.DBProblems | db.sql.SQLProblems):
-                return [db.operator.or_(db.operator.contain(problem.roles, "@everyone"),
-                                        *[db.operator.contain(problem.roles, role) for role in user.roles])]
+                return db.operator.or_(db.operator.contain(problem.roles, "@everyone"),
+                                       *[db.operator.contain(problem.roles, role) for role in user.roles])
+
             if keys:
                 return utils.filter_keys(db.get_problem_filter(filter_), keys.split(','))
 
@@ -127,7 +128,7 @@ def get_problems(
                             })
 
     except Exception as error:
-        logger.error(f'get all problems raise error, detail')
+        logger.error('get all problems raise error, detail')
         logger.exception(error)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=utils.InternalServerError)
 
@@ -135,7 +136,7 @@ def get_problems(
 @problem_router.get("/{id}",
                     summary="Get problem by id",
                     response_model=db.DBProblems,
-                    # dependencies=[Depends(utils.has_permission("problem:view"))],
+                    dependencies=[Depends(utils.has_permission("problem:view"))],
                     responses={
                         200: {
                             "description": "Success",
@@ -263,7 +264,9 @@ def get_problem_statics(id: str,
         statics = []
         for uid in db.get_user_ids():
             submissions = db.get_submission_filter(
-                lambda submission: db.operator.and_(submission.problem == id, submission.by == uid)
+                lambda submission: db.operator.and_(submission.problem == id,
+                                                    submission.by == uid,
+                                                    submission.result != None)
             )
             if submissions:
                 submissions.sort(key=lambda x: (x.result['point'], x.result['time'], x.result['memory']), reverse=True)
@@ -310,7 +313,7 @@ def get_problem_statics(id: str,
 @problem_router.get("s/statics",
                     summary="Get all problems statics",
                     response_model=list[list[int | str]] | str,
-                    dependencies=[Depends(utils.has_permission("problem:views"))],
+                    dependencies=[Depends(utils.has_permission("problems:view"))],
                     responses={
                         200: {
                             "description": "Success"
@@ -373,7 +376,6 @@ def get_problems_statics(to_file: bool = True, redirect: bool = True, download: 
                      summary="Add problem",
                      status_code=status.HTTP_201_CREATED,
                      response_model=db.DBProblems,
-                     dependencies=[Depends(utils.has_permission("problem:add"))],
                      responses={
                          201: {
                              "description": "Success",
@@ -419,9 +421,9 @@ def get_problems_statics(to_file: bool = True, redirect: bool = True, download: 
                              }
                          }
                      })
-def add_problem(problem: db.Problems):
+def add_problem(problem: db.Problems, user: db.DBUser = Depends(utils.has_permission("problem:add"))):
     try:
-        return db.add_problem(problem)
+        return db.add_problem(problem, user)
 
     except db.exception.ProblemAlreadyExisted:
         raise HTTPException(
@@ -613,7 +615,7 @@ def add_problem_testcases(id: str, file: UploadFile):
                       summary="Update problem",
                       response_model=db.DBProblems,
                       status_code=status.HTTP_202_ACCEPTED,
-                      dependencies=[Depends(utils.has_permission("problem:update"))],
+                      dependencies=[Depends(utils.has_permission("problem:edit"))],
                       responses={
                           202: {
                               "description": "Success",
@@ -698,7 +700,7 @@ def problem_update(id: str, problem: db.UpdateProblems):
 @problem_router.patch("/{id}/docs",
                       summary="Update problem docs",
                       status_code=status.HTTP_202_ACCEPTED,
-                      dependencies=[Depends(utils.has_permission("problem:update"))],
+                      dependencies=[Depends(utils.has_permission("problem:edit"))],
                       responses={
                           202: {
                               "description": "Success",
@@ -755,7 +757,7 @@ def problem_docs_update(id: str, file: UploadFile):
 @problem_router.patch("/{id}/testcases",
                       summary="Update problem testcases",
                       status_code=status.HTTP_202_ACCEPTED,
-                      dependencies=[Depends(utils.has_permission("problem:update"))],
+                      dependencies=[Depends(utils.has_permission("problem:edit"))],
                       responses={
                           202: {
                               "description": "Success",

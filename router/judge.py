@@ -1,14 +1,14 @@
 import asyncio
 import json
 import logging
-# import threading
 
-from fastapi import APIRouter, HTTPException, status, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, HTTPException, status, WebSocket, Depends
 
 import db
 import judge
 import utils
 
+# import threading
 
 thread_manager: utils.ThreadingManager
 judge_manger: judge.JudgeManager
@@ -195,12 +195,28 @@ async def submission_judge_ws(id: str, ws: WebSocket):
     if not submission_id or not judge_id:
         return await ws.close(status.WS_1008_POLICY_VIOLATION, "invalid id")
 
+    try:
+        logs = db.get_logs(submission_id, judge_id)
+        for log in logs.log:
+            log = utils.padding(json.loads(log), 2)
+            await ws.send_json({
+                "status": log[0],
+                "data": log[1]
+            })
+        return
+    except db.exception.SubmissionNotFound:
+        return await ws.close(status.WS_1008_POLICY_VIOLATION, "submission not found")
+    except db.exception.SubmissionLogNotFound:
+        logger.debug("log not found D:")
+        pass
+
     queue_id = f"judge::{submission_id}:{judge_id}"
+    msg_queue: db.redis.RedisQueue
     if queue_manager.check(queue_id):
         msg_queue = queue_manager.get(queue_id)
 
-    elif await queue_manager.check_cache(queue_id):
-        msg_queue = await queue_manager.get_cache(queue_id)
+    # elif await queue_manager.check_cache(queue_id):
+    #     msg_queue = await queue_manager.get_cache(queue_id)
 
     else:
         return await ws.close(status.WS_1008_POLICY_VIOLATION, "can find judge queue")
@@ -209,7 +225,7 @@ async def submission_judge_ws(id: str, ws: WebSocket):
         msg = utils.padding(msg, 2)
         await ws.send_json({
             "status": msg[0],
-            "data": msg[1] if len(msg) == 2 else None
+            "data": msg[1]
         })
 
     if msg_queue.closed:
@@ -257,13 +273,12 @@ async def submission_judge_ws(id: str, ws: WebSocket):
 
     @msg_queue.on('close')
     async def close_ws():
-        logger.info(f"WS {ws.client.host} closing...")
         # abort_task.cancel()
         await ws.close(status.WS_1000_NORMAL_CLOSURE, "judge closed")
-        future.set_result(None)
+        return future.set_result(None)
 
     # await abort_task
-    await future
+    return await future
 
 
 """
@@ -288,12 +303,25 @@ def judge_servers():
                     summary="Add server",
                     dependencies=[Depends(utils.has_permission("judge_server:add"))],
                     responses={
-                        409: {"description": "Server already exists",
-                              "content": {"application/json": {"example": "Server already exists"}}}
+                        409: {
+                            "description": "Server already exists",
+                            "content": {
+                                "application/json": {
+                                    "example": {
+                                        "message": "Server already exists",
+                                        "code": "server_already_exists"
+                                    }
+                                }
+                            }
+                        }
                     })
 async def server_add(server: judge.data.Server):
     if server.id in judge_manger._connections:
-        return "server already exists", status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={
+                                "message": "Server already exists",
+                                "code": "server_already_exists"
+                            })
 
     await judge_manger.add_server(server)
     return "added"
@@ -303,12 +331,25 @@ async def server_add(server: judge.data.Server):
                     summary="Pause server",
                     dependencies=[Depends(utils.has_permission("judge_server:edit"))],
                     responses={
-                        404: {"description": "Server not found",
-                              "content": {"application/json": {"example": "Server not found"}}}
+                        404: {
+                            "description": "Server not found",
+                            "content": {
+                                "application/json": {
+                                    "example": {
+                                        "message": "Server not found",
+                                        "code": "server_not_found"
+                                    }
+                                }
+                            }
+                        }
                     })
 async def server_pause(id: str):
     if id not in judge_manger._connections:
-        return "server not found", status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={
+                                "message": "Server not found",
+                                "code": "server_not_found"
+                            })
 
     await judge_manger.pause(id)
     return "paused"
@@ -318,12 +359,25 @@ async def server_pause(id: str):
                     summary="Resume server",
                     dependencies=[Depends(utils.has_permission("judge_server:edit"))],
                     responses={
-                        404: {"description": "Server not found",
-                              "content": {"application/json": {"example": "Server not found"}}}
+                        404: {
+                            "description": "Server not found",
+                            "content": {
+                                "application/json": {
+                                    "example": {
+                                        "message": "Server not found",
+                                        "code": "server_not_found"
+                                    }
+                                }
+                            }
+                        }
                     })
 async def server_resume(id: str):
     if id not in judge_manger._connections:
-        return "server not found", status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={
+                                "message": "Server not found",
+                                "code": "server_not_found"
+                            })
 
     await judge_manger.resume(id)
     return "resumed"
@@ -333,12 +387,25 @@ async def server_resume(id: str):
                     summary="Disconnect server",
                     dependencies=[Depends(utils.has_permission("judge_server:edit"))],
                     responses={
-                        404: {"description": "Server not found",
-                              "content": {"application/json": {"example": "Server not found"}}}
+                        404: {
+                            "description": "Server not found",
+                            "content": {
+                                "application/json": {
+                                    "example": {
+                                        "message": "Server not found",
+                                        "code": "server_not_found"
+                                    }
+                                }
+                            }
+                        }
                     })
 async def server_disconnect(id: str):
     if id not in judge_manger._connections:
-        return "server not found", status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={
+                                "message": "Server not found",
+                                "code": "server_not_found"
+                            })
 
     await judge_manger.disconnect(id)
     return "disconnected"
@@ -348,12 +415,25 @@ async def server_disconnect(id: str):
                     summary="Reconnect server",
                     dependencies=[Depends(utils.has_permission("judge_server:edit"))],
                     responses={
-                        404: {"description": "Server not found",
-                              "content": {"application/json": {"example": "Server not found"}}}
+                        404: {
+                            "description": "Server not found",
+                            "content": {
+                                "application/json": {
+                                    "example": {
+                                        "message": "Server not found",
+                                        "code": "server_not_found"
+                                    }
+                                }
+                            }
+                        }
                     })
 async def server_reconnect(id: str):
     if id not in judge_manger._connections:
-        return "server not found", status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={
+                                "message": "Server not found",
+                                "code": "server_not_found"
+                            })
 
     await judge_manger.connect_with_id(id)
     return "reconnected"
@@ -364,12 +444,25 @@ async def server_reconnect(id: str):
                       summary="Delete server",
                       dependencies=[Depends(utils.has_permission("judge_server:delete"))],
                       responses={
-                          404: {"description": "Server not found",
-                                "content": {"application/json": {"example": "Server not found"}}}
+                          404: {
+                              "description": "Server not found",
+                              "content": {
+                                  "application/json": {
+                                      "example": {
+                                          "message": "Server not found",
+                                          "code": "server_not_found"
+                                      }
+                                  }
+                              }
+                          }
                       })
 async def server_delete(id: str):
     if id not in judge_manger._connections:
-        return "server not found", status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail={
+                                "message": "Server not found",
+                                "code": "server_not_found"
+                            })
 
     await judge_manger.remove_server(id)
     return "removed"

@@ -24,7 +24,8 @@ from .declare import (
     UpdateUser,
     Role,
     DBRole,
-    UpdateRole
+    UpdateRole,
+    SubmissionLog
 )
 from .logging import logger
 
@@ -54,6 +55,7 @@ __all__ = [
     "Submissions",
     "DBSubmissions",
     "UpdateSubmissions",
+    "SubmissionLog",
     "get_submissions",
     "get_submission_ids",
     "get_submission",
@@ -61,6 +63,9 @@ __all__ = [
     "update_submission",
     # "dump_result",
     # "get_result",
+    "get_log_ids",
+    "dump_logs",
+    "get_logs",
     # Users
     "User",
     "UpdateUser",
@@ -109,7 +114,7 @@ get_problem_filter: typing.Callable[[typing.Callable[[DBProblems], typing.Any]],
     get("get_problem_filter")
 get_problem: typing.Callable[[str], DBProblems] = get("get_problem")
 get_problem_docs: typing.Callable[[str], typing.Optional[str]] = get("get_problem_docs")
-add_problem: typing.Callable[[Problems], DBProblems] = get("add_problem")
+add_problem: typing.Callable[[Problems, DBUser], DBProblems] = get("add_problem")
 add_problem_docs: typing.Callable[[str, UploadFile], None] = get("add_problem_docs")
 add_problem_testcases: typing.Callable[[str, UploadFile], None] = get("add_problem_testcases")
 update_problem: typing.Callable[[str, UpdateProblems], DBProblems] = get("update_problem")
@@ -130,6 +135,9 @@ add_submission: typing.Callable[[Submissions, DBUser], DBSubmissions] = get("add
 update_submission: typing.Callable[[str, UpdateSubmissions], DBSubmissions] = get("update_submission")
 # dump_result: typing.Callable[[str, list[declare_.JudgeResult]], None] = get("dump_result")
 # get_result: typing.Callable[[str], list[declare_.JudgeResult]] = get("get_result")
+get_log_ids: typing.Callable[[str], typing.List[str]] = get("get_log_ids")
+dump_logs: typing.Callable[[str, str, list[str]], None] = get("dump_logs")
+get_logs: typing.Callable[[str, str], SubmissionLog] = get("get_logs")
 
 """
 User
@@ -168,7 +176,7 @@ async def setup_redis():
     redis_client = redis_.asyncio.Redis.from_url(utils.config.redis_server)
     try:
         await redis_client.ping()  # noqa
-    except redis_.exceptions.ConnectionError as error:
+    except (redis_.exceptions.ConnectionError, redis_.exceptions.TimeoutError):
         logger.error(f'Failed to connect to Redis "{utils.config.redis_server}"')
         # logger.exception(error)
         logger.warning("You cant use judge service without Redis")
@@ -183,22 +191,17 @@ async def setup_redis():
 
 
 def setup():
-    if utils.config.store_place.startswith("sql:"):
-        sql.setup()
-    elif utils.config.store_place == "file":
-        file.setup()
-    else:
-        raise ValueError(f"unknown store place {utils.config.store_place}")
+    get("setup")()
 
     try:
-        get_role("@default")
+        get_role("@everyone")
     except exception.RoleNotFound:
-        add_role(declare.Role(id="@default", name="default", permissions=declare.DefaultPermissions))
+        add_role(declare.Role(id="@everyone", name="@everyone", permissions=declare.DefaultPermissions))
 
     try:
         get_role("@admin")
     except exception.RoleNotFound:
-        add_role(declare.Role(id="@admin", name="admin", permissions=[]))
+        add_role(declare.Role(id="@admin", name="@admin", permissions=["@admin"]))
 
     try:
         get_user("@admin")
@@ -209,6 +212,3 @@ def setup():
             password=utils.config.admin.password,
             roles=["@admin"]
         ), creator="@system@")
-        logger.info("Admin user created, details:")
-        logger.info(f"Username: {utils.config.admin.name}")
-        logger.info(f"Password: {utils.config.admin.password}")

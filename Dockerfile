@@ -1,10 +1,11 @@
 FROM python:latest
 EXPOSE 8000
 
-WORKDIR /justyse/
-COPY . /justyse/
+VOLUME /justyse
+WORKDIR /justyse
+COPY requirements.txt /justyse/requirements.txt
 
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
-CMD ["fastapi", "dev", "main.py", "--port=8000", "--host=0.0.0.0"]
+ENTRYPOINT ["uvicorn", "main:app"]

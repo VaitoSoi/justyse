@@ -15,7 +15,7 @@ logger.addHandler(utils.console_handler("Submission ro."))
 @submission_router.get("s",
                        summary="Get all submissions",
                        response_model=list[str | dict],
-                       dependencies=[Depends(utils.has_permission("submission:views"))],
+                       dependencies=[Depends(utils.has_permission("submissions:view"))],
                        responses={
                            200: {
                                "description": "Success",
@@ -98,7 +98,7 @@ def submissions(keys: str | None = None, filter: str | None = None):
 
 @submission_router.get("/{id}",
                        summary="Get submission by id",
-                       response_model=db.Submissions,
+                       response_model=db.DBSubmissions,
                        dependencies=[Depends(utils.has_permission("submission:view"))],
                        responses={
                            200: {
@@ -262,31 +262,20 @@ def submission(id: str):
                                 }
                             }
                         })
-def add_submission(submission: db.Submissions, user: db.DBUser = Depends(utils.get_user())):
+def add_submission(submission: db.Submissions, user: db.DBUser = Depends(utils.has_permission("submission:add"))):
     try:
-        if not db.has_permission(user, "submission:add"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "message": "Permission denied",
-                    "code": "permission_denied",
-                    "detail": {
-                        "missing": "submission:add"
-                    }
-                }
-            )
-        if submission.by != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "message": "Conflict user id",
-                    "code": "conflict_user_id",
-                    "detail": {
-                        "expected": user.id,
-                        "got": submission.by
-                    }
-                }
-            )
+        # if submission.by != user.id:
+        #     raise HTTPException(
+        #         status_code=status.HTTP_409_CONFLICT,
+        #         detail={
+        #             "message": "Conflict user id",
+        #             "code": "conflict_user_id",
+        #             "detail": {
+        #                 "expected": user.id,
+        #                 "got": submission.by
+        #             }
+        #         }
+        #     )
         return db.add_submission(submission, user)
 
     except db.exception.UserNotFound:

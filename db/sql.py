@@ -8,6 +8,7 @@ import copy
 import uuid
 
 import sqlalchemy.sql.elements
+import sqlmodel
 from fastapi import UploadFile
 from sqlalchemy import Engine
 from sqlmodel import create_engine, SQLModel, Session, select
@@ -26,6 +27,7 @@ from .declare import (
     Submissions,
     DBSubmissions,
     UpdateSubmissions,
+    SubmissionLog,
     User,
     DBUser,
     UpdateUser,
@@ -49,17 +51,11 @@ from .exception import (
     LanguageNotAccept,
     CompilerNotSupport,
     RoleNotFound,
-    RoleAlreadyExists,
-    PermissionDenied
+    # RoleAlreadyExists,
+    PermissionDenied,
+    SubmissionLogNotFound,
+    SubmissionLogAlreadyExist
 )
-
-
-# class SQLUsers(SQL_Base):
-#     __tablename__ = "users"
-#     id: Mapped[int] = mapped_column(primary_key=True, default=uuid.uuid4())
-#     name: Mapped[str]
-#     password: Mapped[typing.Optional[str]]
-#     auth: Mapped[typing.Optional[str]] = mapped_column(default=None)
 
 
 class SQLProblems(DBProblems, table=True):
@@ -75,6 +71,10 @@ class SQLUsers(DBUser, table=True):
 
 
 class SQLRoles(DBRole, table=True):
+    pass
+
+
+class SQLSubmissionLog(SubmissionLog, table=True):
     pass
 
 
@@ -153,12 +153,13 @@ def get_problem_docs(id: str) -> str:
 
 
 # POST
-def add_problem(problem: Problems):
+def add_problem(problem: Problems, creator: DBUser):
     if problem.id in get_problem_ids():
         raise ProblemAlreadyExisted(problem.id)
 
     problem = SQLProblems(**problem.model_dump())
     problem.dir = gen_path(problem.id)
+    problem.by = creator.id
     try:
         os.makedirs(problem.dir, exist_ok=False)
     except OSError:
@@ -200,8 +201,8 @@ def add_problem_docs(id: str, file: UploadFile):
     file.filename = f"{uuid.uuid4().__str__()}.pdf"
     with open(f"{files_dir}/{file.filename}", "wb") as f:
         f.write(file.file.read())
-
     file.file.close()
+
     problem.description = f"docs:{file.filename}"
     update_problem(id, problem)
 
@@ -333,8 +334,6 @@ def add_submission(submission: Submissions, submitter: DBUser):
     if submission.id in get_submission_ids():
         raise SubmissionAlreadyExist(submission.id)
 
-    get_user(submission.by)
-
     submission = SQLSubmissions(**submission.model_dump())
     submission.by = submitter.id
     submission.dir = os.path.join(submissions_dir, submission.id)
@@ -384,6 +383,7 @@ def update_submission(id: str, submission_: UpdateSubmissions):
 
 
 # OTHER :D
+
 # def get_results_ids() -> typing.List[str]:
 #     with Session(sql_engine) as session:
 #         statement = select(SQLJudgeResults.id)
@@ -409,6 +409,39 @@ def update_submission(id: str, submission_: UpdateSubmissions):
 #         if not result:
 #             raise ResultNotFound(id)
 #         return result.results
+
+def get_log_ids(submission_id: str = None) -> typing.List[str]:
+    with Session(sql_engine) as session:
+        statement = select(SQLSubmissionLog.id).where(SQLSubmissionLog.submission == submission_id)
+        return session.exec(statement).all()
+
+
+def dump_logs(submission_id: str, id: str, logs: list[str]):
+    submission = get_submission(submission_id)
+    if id in get_log_ids():
+        raise SubmissionLogAlreadyExist(id)
+
+    log = SQLSubmissionLog(
+        id=id,
+        submission=submission.id,
+        logs=logs
+    )
+    with Session(sql_engine) as session:
+        session.add(log)
+        session.commit()
+
+
+def get_logs(submission: id, id: str) -> list[str]:
+    submission = get_submission(submission)
+    with Session(sql_engine) as session:
+        statement = select(SQLSubmissionLog).where(
+            sqlmodel.and_(SQLSubmissionLog.id == id,
+                          SQLSubmissionLog.submission == submission.id)
+        )
+        log = session.exec(statement).first()
+        if not log:
+            raise SubmissionLogNotFound(id)
+        return log
 
 
 """
@@ -456,19 +489,25 @@ def get_user(id: str, session: Session = None) -> SQLUsers:
         user = session.exec(statement).first()
     if not user:
         raise UserNotFound()
+    permissions = set()
+    for role in user.roles:
+        role = get_role(role)
+        permissions.update(role.permissions)
+    user.permissions = list(permissions)
     return user
 
 
 # POST
 def add_user(user: User, creator: DBUser | str | None = None):
+    print(user, creator or "None")
     if user.id in get_user_ids():
         raise UserAlreadyExist(user.id)
 
     if isinstance(creator, str) and creator == "@system@":
         pass
 
-    elif not user.roles or not creator:
-        user.roles = ["@default"]
+    elif creator is None and user.roles == ["@everyone"]:
+        pass
 
     else:
         roles = [get_role(role) for role in user.roles]
@@ -564,8 +603,8 @@ def get_role(id: str, session: Session = None) -> SQLRoles:
 
 # POST
 def add_role(role: Role):
-    if role.id in get_role_ids():
-        raise RoleAlreadyExists(role.id)
+    # if role.id in get_role_ids():
+    #     raise RoleAlreadyExists(role.id)
 
     role = SQLRoles(**role.model_dump())
     res = copy.copy(role)

@@ -19,12 +19,12 @@ def or_(*clauses):
 
 
 def in_(field, values: types.Iterable):
-    if isinstance(field, sqlmodel.Column):
+    if is_sql:
         return field.in_(values)
     return field in values
 
 
 def contain(field, value):
-    if isinstance(field, sqlmodel.Column):
+    if is_sql:
         return field.contains(value)
     return value in field

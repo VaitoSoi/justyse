@@ -473,6 +473,7 @@ class JudgeManager:
 
         await msg.put(['overall', result.model_dump()])
         # await msg.put(['done'])
+        await msg.write_log(submission.id)
         await msg.close()
 
         return
@@ -616,6 +617,7 @@ class JudgeManager:
         submission.result = result
         await msg.put(['overall', result.model_dump()])
         # await msg.put(['done'])
+        await msg.write_log(submission.id)
         await msg.close()
 
         db.update_submission(submission.id, submission)

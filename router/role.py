@@ -13,10 +13,11 @@ logger.addHandler(utils.console_handler("Role router"))
 # GET
 @role_router.get("s",
                  summary="Get all roles",
-                 response_model=list[str | dict])
+                 response_model=list[str | dict],
+                 dependencies=[fastapi.Depends(utils.has_permission("roles:view"))],)
 def get_roles(keys: str | None = None):
     try:
-        return db.get_role_ids() if keys is not None else db.get_roles(keys.split(","))
+        return db.get_roles(keys.split(",") if keys is not None else None)
 
     except Exception as error:
         logger.error(f'get roles {keys} raise {error}')
@@ -33,7 +34,8 @@ def get_roles(keys: str | None = None):
                      404: {"description": "Role not found",
                            "content": {"application/json": {"example": {"message": "Role not found"}}}},
                      500: utils.InternalServerErrorResponse
-                 })
+                 },
+                 dependencies=[fastapi.Depends(utils.has_permission("roles:view"))],)
 def get_role(id: str):
     try:
         return db.get_role(id)
@@ -57,7 +59,8 @@ def get_role(id: str):
                       409: {"description": "Role already exists",
                             "content": {"application/json": {"example": {"message": "Role already exists"}}}},
                       500: utils.InternalServerErrorResponse
-                  })
+                  },
+                  dependencies=[fastapi.Depends(utils.has_permission("role:add"))],)
 def add_role(role: db.Role):
     try:
         return db.add_role(role)
@@ -81,7 +84,8 @@ def add_role(role: db.Role):
                        404: {"description": "Role not found",
                              "content": {"application/json": {"example": {"message": "Role not found"}}}},
                        500: utils.InternalServerErrorResponse
-                   })
+                   },
+                   dependencies=[fastapi.Depends(utils.has_permission("role:edit"))],)
 def update_role(id: str, role: db.Role):
     try:
         return db.update_role(id, role)
@@ -105,7 +109,8 @@ def update_role(id: str, role: db.Role):
                         404: {"description": "Role not found",
                               "content": {"application/json": {"example": {"message": "Role not found"}}}},
                         500: utils.InternalServerErrorResponse
-                    })
+                    },
+                    dependencies=[fastapi.Depends(utils.has_permission("role:delete"))],)
 def delete_role(id: str):
     try:
         return db.delete_role(id)

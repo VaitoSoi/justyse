@@ -59,6 +59,7 @@ class SubmissionResult(Indexable):
 
 class Submissions(Indexable):
     __tablename__ = "submissions"
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     problem: str = sqlmodel.Field(foreign_key="problems.id")
     lang: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
     compiler: typing.Tuple[str, typing.Optional[str]] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
@@ -66,12 +67,11 @@ class Submissions(Indexable):
 
 
 class DBSubmissions(Submissions):
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     by: str = sqlmodel.Field(foreign_key="users.id")
     dir: str = sqlmodel.Field(default=None)
     file_path: str = sqlmodel.Field(default=None)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
-    result: SubmissionResult = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
+    result: SubmissionResult | None = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 @utils.partial_model
@@ -79,17 +79,26 @@ class UpdateSubmissions(Submissions):
     pass
 
 
+class SubmissionLog(Indexable):
+    __tablename__ = "submission_logs"
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    submission: str = sqlmodel.Field(foreign_key="submissions.id")
+    logs: list = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+    created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
+
+
 class User(Indexable):
     __tablename__ = "users"
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str
     password: str = sqlmodel.Field(min_length=6, max_length=64)
-    roles: typing.List[str] | None = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
+    roles: typing.List[str] | None = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON), default=["@everyone"])
 
 
 class DBUser(User):
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
     password: str = sqlmodel.Field(min_length=None, max_length=None)
+    permissions: list[str] | None = sqlmodel.Field(default=None, sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 @utils.partial_model
@@ -99,12 +108,12 @@ class UpdateUser(User):
 
 class Role(Indexable):
     __tablename__ = "roles"
+    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     name: str
     permissions: typing.List[str] = sqlmodel.Field(sa_column=sqlmodel.Column(sqlmodel.JSON))
 
 
 class DBRole(Role):
-    id: str = sqlmodel.Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     created_at: str = sqlmodel.Field(default_factory=lambda: str(datetime.datetime.now()))
 
 
@@ -115,16 +124,17 @@ class UpdateRole(Role):
 
 DefaultPermissions = [
     "problem:view",
-    "problem:views",
+    "problems:view",
     "submission:view",
-    "submission:views",
+    "submission:add",
+    "submissions:view",
     "submission:judge",
     "contest:view",
-    "contest:views",
+    "contests:view",
     "contest:join",
     "judge_server:view",
     "user:view",
-    "user:views",
+    "users:view",
     "user:edit",
     "user:delete"
     "role:view",
