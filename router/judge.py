@@ -190,27 +190,33 @@ async def submission_judge_ws(id: str, ws: WebSocket):
     if queue_manager is None:
         return await ws.close(status.WS_1011_INTERNAL_ERROR, "redis not connected")
 
-    submission_id, judge_id = id.split(':')
+    if ":" not in id:
+        return await ws.close(status.WS_1008_POLICY_VIOLATION, "invalid id")
 
+    submission_id, judge_id = id.split(':')
+    queue_id = f"judge::{submission_id}:{judge_id}"
+
+    # print(db.get_log_ids(submission_id))
     if not submission_id or not judge_id:
         return await ws.close(status.WS_1008_POLICY_VIOLATION, "invalid id")
 
     try:
-        logs = db.get_logs(submission_id, judge_id)
-        for log in logs.log:
-            log = utils.padding(json.loads(log), 2)
+        logs = db.get_logs(submission_id, queue_id)
+        for log in logs.logs:
+            pad_log = utils.padding(log, 2)
             await ws.send_json({
-                "status": log[0],
-                "data": log[1]
+                "status": pad_log[0],
+                "data": pad_log[1]
             })
-        return
+        return await ws.close(status.WS_1000_NORMAL_CLOSURE, "eof cache")
+
     except db.exception.SubmissionNotFound:
         return await ws.close(status.WS_1008_POLICY_VIOLATION, "submission not found")
+
     except db.exception.SubmissionLogNotFound:
         logger.debug("log not found D:")
         pass
 
-    queue_id = f"judge::{submission_id}:{judge_id}"
     msg_queue: db.redis.RedisQueue
     if queue_manager.check(queue_id):
         msg_queue = queue_manager.get(queue_id)

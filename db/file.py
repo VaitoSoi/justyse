@@ -334,7 +334,7 @@ def update_submission(id: str, submission: UpdateSubmissions):
 
 def get_log_ids(submission_id: str) -> typing.List[str]:
     submission = get_submission(submission_id)
-    return [f for f in os.listdir(path.join(submission.dir, "logs")) if f.endswith(".json")]
+    return [f.replace(".json", "") for f in os.listdir(path.join(submission.dir, "logs")) if f.endswith(".json")]
 
 
 def dump_logs(submission_id: str, id: str, logs: str):
@@ -347,11 +347,11 @@ def dump_logs(submission_id: str, id: str, logs: str):
         logs=logs
     )
     submission = get_submission(submission_id)
-    print("dumping")
+    # print("dumping")
     with open(f"{submission.dir}/logs/{id}.json", "w") as f:
-        print("opened file")
+        # print("opened file")
         f.write(log.model_dump_json(indent=4))
-    print("dumped")
+    # print("dumped")
 
 
 def get_logs(submission_id: str, id: str) -> SubmissionLog:

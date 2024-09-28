@@ -52,7 +52,7 @@ class SubmissionResult(Indexable):
     status: int
     warn: str | None
     error: str | None
-    time: float | None
+    time: tuple[float, float, float]
     point: float | None
     memory: tuple[float, float] | None
 

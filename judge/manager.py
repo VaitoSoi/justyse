@@ -116,7 +116,8 @@ class JudgeManager:
                     websockets.exceptions.InvalidHandshake,
                     websockets.exceptions.AbortHandshake,
                     websockets.exceptions.ConnectionClosedError,
-                    RuntimeError):
+                    RuntimeError,
+                    exception.ServerBusy):
                 # raise exception.ConnectionError() from error
 
                 if not self.stop.is_set():
@@ -277,7 +278,7 @@ class JudgeManager:
                              msg: RedisQueue,
                              # abort: asyncio.Event
                              ):
-        await msg.put(['waiting'])
+        await msg.put(['waiting', None])
         # self._judge_abort[submission_id] = abort
         await self._judge_queue.put((submission_id, msg))
 
@@ -388,6 +389,7 @@ class JudgeManager:
         await msg.put(['catched', connection.name])
 
         time: float = 0
+        ptime: float = 0
         amemory: float = 0
         pmemory: float = 0
         warn: str = ""
@@ -411,6 +413,7 @@ class JudgeManager:
                     point = data.get('point', 0)
                     points += point
                     time += data.get('time', 0)
+                    ptime = max(ptime, data.get('time', 0))
                     amemory += data.get('memory', (0, 0))[0]
                     pmemory += data.get('memory', (0, 0))[1]
 
@@ -434,6 +437,7 @@ class JudgeManager:
                                if status == 'error:system' else
                                declare.StatusCode.COMPILE_ERROR.value)
                     time = -1
+                    ptime = -1
                     amemory = -1
                     pmemory = -1
                     break
@@ -441,6 +445,7 @@ class JudgeManager:
                 elif status == 'aborted':
                     overall = declare.StatusCode.ABORTED.value
                     time = -1
+                    ptime = -1
                     amemory = -1
                     pmemory = -1
                     break
@@ -452,6 +457,7 @@ class JudgeManager:
             self._logger.error(f"Judge server#{connection.id} raise exception while judging {submission.id}, detail")
             self._logger.exception(e)
             time = -1
+            ptime = -1
             amemory = -1
             pmemory = -1
             error = str(e)
@@ -461,7 +467,7 @@ class JudgeManager:
             status=overall if overall >= -1 else declare.StatusCode.SYSTEM_ERROR.value,
             warn=warn,
             error=error,
-            time=time if time == -1 else (time / problem.total_testcases),
+            time=(-1, -1, -1) if time == -1 else (time, time / problem.total_testcases, ptime),
             memory=(
                 amemory / problem.total_testcases if amemory != -1 else -1,
                 pmemory / problem.total_testcases if pmemory != -1 else -1
@@ -523,6 +529,7 @@ class JudgeManager:
         warns: set[str] = set()
         errors: set[str] = set()
         total_time: float = 0
+        ptime: float = 0
         amemory: float = 0
         pmemory: float = 0
         points: float = 0
@@ -577,6 +584,7 @@ class JudgeManager:
                 point = data.get('point', 0)
                 points += point
                 total_time += data.get('time', 0)
+                ptime = max(ptime, data.get('time', 0))
                 amemory += data.get('memory', (0, 0))[0]
                 pmemory += data.get('memory', (0, 0))[1]
 
@@ -592,7 +600,7 @@ class JudgeManager:
         if "aborted" in overall:
             result = db.declare.SubmissionResult(
                 status=declare.StatusCode.ABORTED.value,
-                time=-1,
+                time=(-1, -1, -1),
                 warn="",
                 error="",
                 memory=(-1, -1),
@@ -604,7 +612,7 @@ class JudgeManager:
             print(overall, errors)
             result = db.declare.SubmissionResult(
                 status=overall[0] if len(errors) == 0 else declare.StatusCode.SYSTEM_ERROR.value,
-                time=total_time if total_time == -1 else (total_time / problem.total_testcases),
+                time=(-1, -1, -1) if total_time == -1 else (total_time, total_time / problem.total_testcases, ptime),
                 warn="\n".join(list(warns)),
                 error="\n".join(list(errors)),
                 memory=(
