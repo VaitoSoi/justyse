@@ -334,7 +334,8 @@ def update_submission(id: str, submission: UpdateSubmissions):
 
 def get_log_ids(submission_id: str) -> typing.List[str]:
     submission = get_submission(submission_id)
-    return [f.replace(".json", "") for f in os.listdir(path.join(submission.dir, "logs")) if f.endswith(".json")]
+    return ([f.replace(".json", "") for f in os.listdir(path.join(submission.dir, "logs")) if f.endswith(".json")]
+            if path.exists(path.join(submission.dir, "logs")) else [])
 
 
 def dump_logs(submission_id: str, id: str, logs: str):

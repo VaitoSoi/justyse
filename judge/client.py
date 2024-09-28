@@ -223,7 +223,7 @@ class JudgeClient:
         except (websockets.exceptions.ConnectionClosed,
                 websockets.exceptions.ConnectionClosedError,
                 websockets.exceptions.ConnectionClosedOK):
-            return self.close()
+            return await self.close()
 
         except Exception as e:
             self._logger.error(f"Recive error while sending data to Judge server#{self.id}, detail:")
@@ -288,7 +288,7 @@ class JudgeClient:
 
         return self._debug.append("written:code")
 
-    async def _testcases(self, problem: db.Problems, test_range: typing.Tuple[int, int]):
+    async def _testcases(self, problem: db.DBProblems, test_range: typing.Tuple[int, int]):
         test_dir = os.path.join(problem.dir, "testcases")
         for i in range(test_range[0], test_range[1] + 1):
             input_file = os.path.join(test_dir, str(i), problem.test_name[0])
@@ -310,7 +310,7 @@ class JudgeClient:
 
             self._debug.append(f"written:testcase {i}")
 
-    async def _judger(self, problem: db.Problems):
+    async def _judger(self, problem: db.DBProblems):
         if not os.path.exists(os.path.join(problem.dir, "judger.py")):
             return
 
